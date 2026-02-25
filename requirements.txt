@@ -1,0 +1,5 @@
+# 接口自动化测试必要依赖
+pytest
+# 需与当前 pytest 兼容（2.8.6 会报 getfixturedefs / iter_parents）；生成报告若出现 titlePath 错误，请将 Allure CLI 升级至 2.24+
+allure-pytest>=2.10.0
+requests

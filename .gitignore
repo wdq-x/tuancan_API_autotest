@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 虚拟环境（按实际目录名调整）
+.env
+venv/
+.venv/
+Envs/
+
+# 测试与报告
+.pytest_cache/
+.coverage
+htmlcov/
+report/allure_result/
+report/allure_html/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统与临时
+.DS_Store
+Thumbs.db
+*.log
