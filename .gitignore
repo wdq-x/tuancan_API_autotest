@@ -22,6 +22,7 @@ htmlcov/
 report/allure_result/
 report/allure_html/
 allure-results/
+allure-report/
 test-results/
 
 # IDE

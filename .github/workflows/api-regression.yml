@@ -21,6 +21,8 @@ jobs:
   api-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      report_available: ${{ steps.report_check.outputs.available }}
     env:
       PYTHONUTF8: "1"
       API_BASE_URL: https://sa-demo-cloud.holderzone.cn
@@ -51,6 +53,30 @@ jobs:
           --alluredir=allure-results
           --junitxml=test-results/junit.xml
 
+      - name: Check Allure results
+        id: report_check
+        if: always()
+        shell: bash
+        run: |
+          if [ -d allure-results ] && find allure-results -type f -name '*-result.json' -print -quit | grep -q .; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Java for Allure
+        if: always() && steps.report_check.outputs.available == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Generate Allure HTML report
+        if: always() && steps.report_check.outputs.available == 'true'
+        run: |
+          npm install --global allure-commandline@2.29.0
+          allure generate allure-results --clean -o allure-report
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -61,3 +87,25 @@ jobs:
             test-results
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Upload Allure report for GitHub Pages
+        if: always() && steps.report_check.outputs.available == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: allure-report
+
+  publish-report:
+    needs: api-test
+    if: always() && needs.api-test.outputs.report_available == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy Allure report to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

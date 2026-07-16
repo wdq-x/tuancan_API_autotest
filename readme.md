@@ -205,7 +205,7 @@ python -m pytest test_case/管理平台/销售管理/test_05_api_sales_quotation
 
 ## CI/CD
 
-GitHub Actions 工作流位于 `.github/workflows/api-regression.yml`。每次推送到 `main`、手动触发，及每个工作日北京时间 09:00 都会执行完整 `test_case` 回归，写操作保持开启。由于该回归会创建并清理共享测试数据，工作流使用并发锁保证同一时刻只运行一个任务。
+GitHub Actions 工作流位于 `.github/workflows/api-regression.yml`。每次推送到 `main`、手动触发，及每个工作日北京时间 09:00 都会执行完整 `test_case` 回归，写操作保持开启。由于该回归会创建并清理共享测试数据，工作流使用并发锁保证同一时刻只运行一个任务。测试完成后会自动生成 Allure HTML 并部署到 GitHub Pages；在仓库 **Settings -> Pages** 中将 Source 设置为 **GitHub Actions**，部署任务完成后可从 `publish-report` 任务的部署链接打开报告。
 
 在 GitHub 仓库的 **Settings -> Secrets and variables -> Actions** 中创建以下 Secrets 后即可运行：
 
