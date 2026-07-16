@@ -185,9 +185,9 @@ allure open ./report/allure_html
 
 管理平台的测试地址、默认请求头、渠道管理测试账号和写操作开关统一维护在 `config/project_information.py`：
 
-- `base_url`：当前为本地管理平台 `http://localhost:3001`。
-- `MANAGEMENT_TEST_ACCOUNT`：唯一的管理平台测试账号。渠道、线索、客户和后续管理平台用例均使用此账号登录，因此它需要具备相应模块权限。
-- `ENABLE_WRITE_TESTS`：开启后执行渠道、线索、客户的完整写入与清理链路。
+- `base_url`：默认测试环境为 `https://sa-demo-cloud.holderzone.cn`，可通过 `API_BASE_URL` 覆盖。
+- `MANAGEMENT_TEST_ACCOUNT`：从 `MANAGEMENT_TEST_USERNAME` 和 `MANAGEMENT_TEST_PASSWORD` 环境变量读取。渠道、线索、客户和后续管理平台用例均使用此账号登录，因此它需要具备相应模块权限。
+- `ENABLE_WRITE_TESTS`：默认开启，可通过环境变量控制；开启后执行渠道、线索、客户和报价单的完整写入与清理链路。
 
 渠道管理测试脚本会直接读取以上配置，不需要再设置环境变量：
 
@@ -202,3 +202,14 @@ python -m pytest test_case/管理平台/销售管理/test_04_api_sales_product_m
 # 运行销售报价单管理
 python -m pytest test_case/管理平台/销售管理/test_05_api_sales_quotation_management.py -s -q
 ```
+
+## CI/CD
+
+GitHub Actions 工作流位于 `.github/workflows/api-regression.yml`。每次推送到 `main`、手动触发，及每个工作日北京时间 09:00 都会执行完整 `test_case` 回归，写操作保持开启。由于该回归会创建并清理共享测试数据，工作流使用并发锁保证同一时刻只运行一个任务。
+
+在 GitHub 仓库的 **Settings -> Secrets and variables -> Actions** 中创建以下 Secrets 后即可运行：
+
+- `MANAGEMENT_TEST_USERNAME`
+- `MANAGEMENT_TEST_PASSWORD`
+
+本地运行时，可参考 `.env.example` 将同名环境变量设置到终端或 IDE。`.env` 已被 Git 忽略，不能提交包含真实账号密码的文件。

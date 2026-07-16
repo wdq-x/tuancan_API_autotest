@@ -21,6 +21,8 @@ Envs/
 htmlcov/
 report/allure_result/
 report/allure_html/
+allure-results/
+test-results/
 
 # IDE
 .idea/

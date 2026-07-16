@@ -4,6 +4,7 @@
 - 环境 base_url、请求头、超时等
 - Allure 报告环境变量
 """
+import os
 
 # Allure 报告环境信息（用于 report/widgets/environment.json）
 ENV_VARS = {
@@ -13,8 +14,8 @@ ENV_VARS = {
     "department": "小吴",
 }
 
-# 接口测试环境 base_url（按需修改为实际被测系统地址）
-base_url = "http://localhost:3001"
+# 接口测试环境 base_url。CI 可通过 API_BASE_URL 覆盖默认测试环境。
+base_url = os.getenv("API_BASE_URL", "https://sa-demo-cloud.holderzone.cn").rstrip("/")
 
 # 默认请求头（按需修改）
 default_headers = {
@@ -25,13 +26,17 @@ default_headers = {
 # 请求超时时间（秒）
 timeout = 10
 
-# 管理平台接口自动化唯一测试账号。渠道、线索、客户及后续所有管理平台模块
-# 都直接读取此对象登录；只在这里维护一次账号密码。
+# 管理平台接口自动化唯一测试账号。凭据只从环境变量读取，避免提交到仓库。
 MANAGEMENT_TEST_ACCOUNT = {
-    "username": "17303457961",
-    "password": "12345678",
+    "username": os.getenv("MANAGEMENT_TEST_USERNAME", ""),
+    "password": os.getenv("MANAGEMENT_TEST_PASSWORD", ""),
 }
 
 # 渠道管理和线索管理的写操作用例会创建带 AT- 前缀的临时数据，并在用例结束时清理。
-# 当前 base_url 指向本地测试平台，默认启用完整业务链路回归。
-ENABLE_WRITE_TESTS = True
+# 默认启用完整业务链路回归；CI 可显式设为 true/false。
+ENABLE_WRITE_TESTS = os.getenv("ENABLE_WRITE_TESTS", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
