@@ -21,7 +21,7 @@ REPORT_HTML_DIR = os.path.join(PROJECT_ROOT, "report", "allure_html")
 report_html_path = "report/allure_html"
 
 '''''''''''''''''''''''''''''要执行的测试用例（可改为具体用例文件或目录）'''''''''''''''''''''''''''''''''''''''
-case_list = r'E:\jiekou\test_case\test_02_api_order.py'
+case_list = r'E:\jiekou\test_case\管理平台\销售管理'
 
 
 def _path_for_shell(path):
