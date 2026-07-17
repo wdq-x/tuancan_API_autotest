@@ -14,9 +14,6 @@ ENV_VARS = {
     "department": "小吴",
 }
 
-# 接口测试环境 base_url。CI 可通过 API_BASE_URL 覆盖默认测试环境。
-base_url = os.getenv("API_BASE_URL", "https://sa-demo-cloud.holderzone.cn").rstrip("/")
-
 # 默认请求头（按需修改）
 default_headers = {
     "Content-Type": "application/json",
@@ -26,11 +23,24 @@ default_headers = {
 # 请求超时时间（秒）
 timeout = 10
 
-# 管理平台接口自动化唯一测试账号。凭据只从环境变量读取，避免提交到仓库。
+# 接口测试环境 base_url。CI 可通过 API_BASE_URL 覆盖默认测试环境。
+# 线上环境
+base_url = os.getenv("API_BASE_URL", "https://sa-demo-cloud.holderzone.cn").rstrip("/")
+# # 本地
+# base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:7777").rstrip("/")
+
+# 管理平台接口自动化测试账号。
+# # CI / Git 环境：从运行环境变量读取凭据。
 MANAGEMENT_TEST_ACCOUNT = {
     "username": os.getenv("MANAGEMENT_TEST_USERNAME", ""),
     "password": os.getenv("MANAGEMENT_TEST_PASSWORD", ""),
 }
+
+# # 本地环境：使用本地管理平台测试账号。
+# MANAGEMENT_TEST_ACCOUNT = {
+#     "username": "17303457961",
+#     "password": "12345678",
+# }
 
 # 渠道管理和线索管理的写操作用例会创建带 AT- 前缀的临时数据，并在用例结束时清理。
 # 默认启用完整业务链路回归；CI 可显式设为 true/false。
