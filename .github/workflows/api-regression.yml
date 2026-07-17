@@ -48,10 +48,17 @@ jobs:
           python -c "import os, sys; required = ('API_BASE_URL', 'MANAGEMENT_TEST_USERNAME', 'MANAGEMENT_TEST_PASSWORD'); missing = [name for name in required if not os.getenv(name)]; sys.exit('Missing required GitHub Actions secrets: ' + ', '.join(missing)) if missing else None"
 
       - name: Run full API regression
-        run: >
-          python -m pytest test_case -q
-          --alluredir=allure-results
-          --junitxml=test-results/junit.xml
+        id: run_regression
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          python -m pytest test_case -q \
+            --alluredir=allure-results \
+            --junitxml=test-results/junit.xml
+          exit_code=$?
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit "$exit_code"
 
       - name: Check Allure results
         id: report_check
@@ -77,6 +84,32 @@ jobs:
           npm install --global allure-commandline@2.29.0
           allure generate allure-results --clean -o allure-report
 
+      - name: Publish parsed Allure report to test management
+        if: always() && steps.report_check.outputs.available == 'true'
+        env:
+          TEST_REPORT_INGEST_URL: ${{ secrets.TEST_REPORT_INGEST_URL }}
+          TEST_REPORT_INGEST_TOKEN: ${{ secrets.TEST_REPORT_INGEST_TOKEN }}
+          TEST_REPORT_ENV_CONFIG_ID: ${{ secrets.TEST_REPORT_ENV_CONFIG_ID }}
+        run: |
+          if [ -z "$TEST_REPORT_INGEST_URL" ] || [ -z "$TEST_REPORT_INGEST_TOKEN" ]; then
+            echo "::notice::Test-management report upload skipped because TEST_REPORT_INGEST_URL or TEST_REPORT_INGEST_TOKEN is not configured."
+            exit 0
+          fi
+          python scripts/publish_allure_results.py \
+            --results-dir allure-results \
+            --endpoint "$TEST_REPORT_INGEST_URL" \
+            --token "$TEST_REPORT_INGEST_TOKEN" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-number "$GITHUB_RUN_NUMBER" \
+            --workflow "$GITHUB_WORKFLOW" \
+            --ref "$GITHUB_REF" \
+            --commit-sha "$GITHUB_SHA" \
+            --base-url "$API_BASE_URL" \
+            --report-url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --env-config-id "$TEST_REPORT_ENV_CONFIG_ID" \
+            --return-code "${{ steps.run_regression.outputs.exit_code }}"
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,6 +126,10 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: allure-report
+
+      - name: Mark workflow failed when regression failed
+        if: always() && steps.run_regression.outputs.exit_code != '0'
+        run: exit 1
 
   publish-report:
     needs: api-test
