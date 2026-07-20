@@ -103,6 +103,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" \
             --run-number "$GITHUB_RUN_NUMBER" \
             --workflow "$GITHUB_WORKFLOW" \
+            --trigger-type "$GITHUB_EVENT_NAME" \
             --ref "$GITHUB_REF" \
             --commit-sha "$GITHUB_SHA" \
             --base-url "$API_BASE_URL" \

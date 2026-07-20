@@ -31,6 +31,7 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-number", default="")
     parser.add_argument("--workflow", default="")
+    parser.add_argument("--trigger-type", default="unknown")
     parser.add_argument("--ref", default="")
     parser.add_argument("--commit-sha", default="")
     parser.add_argument("--base-url", default="")
@@ -48,6 +49,7 @@ def main() -> int:
         "run_id": args.run_id,
         "run_number": args.run_number,
         "workflow": args.workflow,
+        "trigger_type": args.trigger_type,
         "ref": args.ref,
         "commit_sha": args.commit_sha,
         "base_url": args.base_url,
