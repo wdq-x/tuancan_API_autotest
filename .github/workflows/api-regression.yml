@@ -8,8 +8,6 @@ on:
   schedule:
     # Weekdays at 09:00 Asia/Shanghai. GitHub Actions schedules use UTC.
     - cron: "0 1 * * 1-5"
-    # Temporary end-to-end scheduled-report verification for 2026-07-20.
-    - cron: "*/5 * 20 7 *"
 
 permissions:
   contents: read
