@@ -201,7 +201,6 @@ def _product_body(name=None, status="enabled"):
         "default_price": "1000.00",
         "guide_price": "1200.00",
         "tax_rate": "6.00",
-        "cost_price": "800.00",
         "default_remark": "报价单接口自动化临时商品",
         "status": status,
         "sort_order": 99,

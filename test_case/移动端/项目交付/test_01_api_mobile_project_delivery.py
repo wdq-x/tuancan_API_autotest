@@ -25,6 +25,7 @@ from utils.http_client import NO_PROXIES, HttpClient
 LOGIN_URL = "/v1/login"
 PROJECTS_URL = "/v1/project-delivery/projects"
 TODOS_URL = "/v1/project-delivery/todos"
+DEMAND_COLLABORATORS_URL = "/v1/project-delivery/demand-collaborators"
 
 SUCCESS_CODE = 20000
 INVALID_PARAMS_CODE = 4001
@@ -33,7 +34,9 @@ TOKEN_INVALID_CODE = 5104
 STATE_CONFLICT_CODE = 409010
 NOT_FOUND_CODE = 4040
 
-TODO_TYPES = {"node", "confirm", "material", "rectification", "demand"}
+PROJECT_TODO_TYPES = {"node", "confirm", "material", "rectification", "demand"}
+TODO_TYPES = PROJECT_TODO_TYPES | {"team_plan", "after_sales"}
+TODO_SOURCES = {"project_list", "team_plan", "after_sales", "demand"}
 TODO_STATUSES = {"open", "closed"}
 NODE_STATUSES = {"pending", "in_progress", "submitted", "confirmed", "rejected", "blocked", "skipped"}
 PROJECT_REQUIRED_FIELDS = {
@@ -143,11 +146,26 @@ def _assert_todo_shape(todo, action):
     assert isinstance(todo, dict), "%s 待办应为对象：%r" % (action, todo)
     missing = TODO_REQUIRED_FIELDS - set(todo)
     assert not missing, "%s 待办缺少字段 %s：%s" % (action, missing, todo)
-    assert isinstance(todo["id"], int) and todo["id"] > 0, "%s 待办 id 非法：%s" % (action, todo)
-    assert isinstance(todo["project_id"], int) and todo["project_id"] > 0, "%s 待办项目 id 非法：%s" % (action, todo)
+    todo_source = todo.get("todo_source")
+    assert todo_source in TODO_SOURCES, "%s 待办来源非法：%s" % (action, todo)
     assert todo["todo_type"] in TODO_TYPES, "%s 待办类型非法：%s" % (action, todo)
     assert todo["status"] in TODO_STATUSES, "%s 待办状态非法：%s" % (action, todo)
     assert isinstance(todo["overdue"], bool), "%s overdue 应为布尔值：%s" % (action, todo)
+
+    if todo_source == "project_list":
+        assert todo["todo_type"] in PROJECT_TODO_TYPES, "%s 项目待办类型非法：%s" % (action, todo)
+        assert isinstance(todo["id"], int) and todo["id"] > 0, "%s 项目待办 id 非法：%s" % (action, todo)
+        assert isinstance(todo["project_id"], int) and todo["project_id"] > 0, "%s 项目待办项目 id 非法：%s" % (action, todo)
+        return
+
+    source_id = todo.get("source_id")
+    assert isinstance(source_id, int) and source_id > 0, "%s 聚合待办来源 id 非法：%s" % (action, todo)
+    assert todo["id"] == "%s:%s" % (todo_source, source_id), "%s 聚合待办 id 不正确：%s" % (action, todo)
+    assert todo.get("todo_key") == todo["id"], "%s 聚合待办 key 不正确：%s" % (action, todo)
+    if todo_source in {"team_plan", "after_sales"}:
+        assert todo["project_id"] is None, "%s 非项目待办不应关联项目：%s" % (action, todo)
+    else:
+        assert isinstance(todo["project_id"], int) and todo["project_id"] > 0, "%s 需求待办项目 id 非法：%s" % (action, todo)
 
 
 def _assert_node_shape(node, action):
@@ -167,9 +185,19 @@ def _login_mobile_client(username, password):
         json={"username": username, "password": password, "client_type": "mobile"},
     )
     payload = _assert_success(response, "移动端项目交付账号登录")
-    token = (payload.get("data") or {}).get("access_token")
+    data = payload.get("data") or {}
+    token = data.get("access_token")
     assert token, "移动端登录成功但未返回 access_token：%s" % payload
+    user_info = data.get("user_info") or {}
+    user_id = user_info.get("id")
+    assert isinstance(user_id, int) and user_id > 0, "移动端登录成功但未返回当前用户 id：%s" % payload
+    user_keyword = str(
+        user_info.get("user_id") or user_info.get("email") or user_info.get("phone") or ""
+    ).strip()
+    assert user_keyword, "移动端登录成功但未返回当前用户检索信息：%s" % payload
     client.headers["Authorization"] = "Bearer %s" % token
+    client.mobile_user_id = user_id
+    client.mobile_user_keyword = user_keyword
     return client
 
 
@@ -245,6 +273,22 @@ def _get_nodes(client, project_id):
     return data["items"]
 
 
+def _get_current_user_demand_collaborator(client):
+    """模拟需求登记页选择当前登录账号为协同人，保证新建待办可被当前账号回查。"""
+    payload = _assert_success(
+        client.get(
+            DEMAND_COLLABORATORS_URL,
+            params={"keyword": client.mobile_user_keyword, "page": 1, "page_size": 100},
+        ),
+        "获取移动端需求协同人列表",
+    )
+    data = _assert_page_payload(payload, "获取移动端需求协同人列表", 1, 100)
+    current_user_id = getattr(client, "mobile_user_id", None)
+    collaborator = next((item for item in data["items"] if item.get("id") == current_user_id), None)
+    assert collaborator is not None, "需求协同人列表未包含当前测试账号 %s：%s" % (current_user_id, data)
+    return current_user_id
+
+
 def _get_node_detail(client, project_id, node_id):
     payload = _assert_success(
         client.get("%s/%s/nodes/%s" % (PROJECTS_URL, project_id, node_id)),
@@ -269,7 +313,9 @@ def _list_todos(client, todo_type="all", page=1, page_size=100):
     data = _assert_page_payload(payload, "获取移动端%s待办" % todo_type, page, page_size)
     for todo in data["items"]:
         _assert_todo_shape(todo, "移动端待办列表")
-        if todo_type != "all":
+        if todo_type == "project_todo":
+            assert todo["todo_source"] == "project_list", "项目待办筛选返回其他来源：%s" % todo
+        elif todo_type != "all":
             assert todo["todo_type"] == todo_type, "待办类型筛选返回其他类型：%s" % todo
     return data
 
@@ -667,6 +713,7 @@ class Test移动端项目交付处理链路:
             project = _create_temporary_project(mobile_delivery_client, "需求")
             project_id = project["id"]
             node = next(item for item in _get_nodes(mobile_delivery_client, project_id) if item["id"] == project["current_node_id"])
+            collaborator_id = _get_current_user_demand_collaborator(mobile_delivery_client)
             title = "AT-移动端现场需求-%s" % uuid4().hex[:8]
 
             with allure.step("移动端需求标题和描述不满足最小长度应被拒绝"):
@@ -674,6 +721,7 @@ class Test移动端项目交付处理链路:
                     "%s/%s/demands" % (PROJECTS_URL, project_id),
                     json={
                         "source_node_id": node["id"],
+                        "collaborator_id": collaborator_id,
                         "title": "A",
                         "description": "短",
                         **_mobile_request_meta(),
@@ -687,6 +735,7 @@ class Test移动端项目交付处理链路:
                         "%s/%s/demands" % (PROJECTS_URL, project_id),
                         json={
                             "source_node_id": node["id"],
+                            "collaborator_id": collaborator_id,
                             "title": title,
                             "description": "移动端现场登记的需求描述不少于五个字符",
                             "source_scene": "现场沟通",
@@ -702,6 +751,7 @@ class Test移动端项目交付处理链路:
             assert isinstance(demand_id, int) and demand_id > 0, create_payload
             assert demand.get("source_node_id") == node["id"], demand
             assert demand.get("title") == title, demand
+            assert demand.get("collaborator_id") == collaborator_id, demand
             assert demand.get("status") == "pending_confirm", demand
 
             with allure.step("加载移动端项目需求明细"):
