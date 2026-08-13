@@ -14,10 +14,11 @@ from utils.http_client import HttpClient
 BASE_URL = "/v1/channel-auth"
 
 
-@allure.parent_suite("API regression")
-@allure.suite("Management platform - channel account authentication")
-class TestChannelAccountAuthentication:
-    @allure.feature("Login validation")
+@allure.parent_suite("接口自动化")
+@allure.suite("管理平台-售后与协同-渠道账号认证")
+class Test渠道账号认证:
+    @allure.feature("登录校验")
+    @allure.title("渠道账号登录缺少凭据被拒绝")
     def test_channel_login_rejects_missing_credentials(self):
         assert_validation_error(
             HttpClient().post(BASE_URL + "/login", json={}),
@@ -25,7 +26,8 @@ class TestChannelAccountAuthentication:
             (("body", "phone"), ("body", "password")),
         )
 
-    @allure.feature("Token boundary")
+    @allure.feature("令牌边界")
+    @allure.title("渠道账号接口未登录访问被拒绝")
     def test_channel_account_endpoints_reject_anonymous_access(self):
         client = HttpClient()
         for suffix, action in (

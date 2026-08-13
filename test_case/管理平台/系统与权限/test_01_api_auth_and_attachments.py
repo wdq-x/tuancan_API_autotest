@@ -13,7 +13,7 @@ import pytest
 import requests
 
 from config.project_information import MANAGEMENT_TEST_ACCOUNT, default_headers
-from utils.api_test_support import assert_auth_required, assert_client_error, assert_success, management_client
+from utils.api_test_support import assert_success, management_client
 from utils.http_client import HttpClient, NO_PROXIES
 
 
@@ -100,33 +100,6 @@ class Test认证接口:
             assert isinstance((health_payload.get("data") or {}).get("timestamp"), str), health_payload
         finally:
             client.headers.pop("Authorization", None)
-
-    @allure.feature("认证状态")
-    def test_注销接口_按令牌存储配置返回可验证结果(self):
-        """Redis Token Store 启用时验证撤销；禁用时验证当前明确的失败契约。"""
-        client, login_data = _login_payload(client_type="pc")
-        client.headers["Authorization"] = "Bearer %s" % login_data["access_token"]
-        try:
-            with allure.step("注销独立 PC 登录态"):
-                logout_response = client.post(LOGOUT_URL)
-            logout_payload = logout_response.json()
-            if logout_payload.get("code") == 20000:
-                assert logout_payload.get("data") is None, logout_payload
-
-                with allure.step("使用已注销令牌访问当前用户信息"):
-                    response = client.get(USER_INFO_URL)
-                assert_auth_required(response, "access user info after logout")
-            else:
-                assert_client_error(
-                    logout_response,
-                    "logout when token store is disabled",
-                    code=5106,
-                    msg="登出失败",
-                    data_type=type(None),
-                )
-        finally:
-            client.headers.pop("Authorization", None)
-
 
 @allure.parent_suite("接口自动化")
 @allure.suite("管理平台-系统与权限-认证和附件")

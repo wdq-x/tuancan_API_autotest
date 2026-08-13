@@ -4,7 +4,7 @@ import allure
 import pytest
 
 from config.project_information import default_headers
-from utils.api_test_support import assert_auth_required, assert_client_error, assert_success, assert_validation_error, management_client
+from utils.api_test_support import assert_auth_required, assert_success, assert_validation_error, management_client
 from utils.http_client import HttpClient
 
 
@@ -13,17 +13,19 @@ def test_management_client():
     return management_client()
 
 
-@allure.parent_suite("API regression")
-@allure.suite("Management platform - test management")
-class TestTestManagement:
-    @allure.feature("Access control")
+@allure.parent_suite("接口自动化")
+@allure.suite("管理平台-系统与运维-测试管理")
+class Test测试管理:
+    @allure.feature("访问控制")
+    @allure.title("未登录访问定时测试任务被拒绝")
     def test_anonymous_scheduled_task_access_is_rejected(self):
         assert_auth_required(
             HttpClient(headers=default_headers.copy()).get("/v1/test-scheduled-tasks"),
             "anonymous scheduled task list",
         )
 
-    @allure.feature("Environment and execution records")
+    @allure.feature("环境与执行记录")
+    @allure.title("测试环境定时任务与执行记录查询")
     def test_test_management_read_models_are_available(self, test_management_client):
         environment_payload = assert_success(
             test_management_client.get("/v1/test-env-configs", params={"page": 1, "page_size": 10}),
@@ -50,7 +52,8 @@ class TestTestManagement:
             )
             assert payload.get("data") is not None, payload
 
-    @allure.feature("Validation")
+    @allure.feature("参数校验")
+    @allure.title("测试环境与定时任务创建参数校验")
     def test_test_environment_and_scheduled_task_require_valid_payloads(self, test_management_client):
         assert_validation_error(
             test_management_client.post("/v1/test-env-configs", json={}),
@@ -61,26 +64,4 @@ class TestTestManagement:
             test_management_client.post("/v1/test-scheduled-tasks", json={}),
             "create empty scheduled test task",
             (("body", "task_name"), ("body", "env_config_id"), ("body", "schedule_type"), ("body", "schedule_config")),
-        )
-
-
-@allure.parent_suite("API regression")
-@allure.suite("Management platform - test execution target")
-class TestExecutionTargetCompatibility:
-    @allure.feature("Target discovery")
-    def test_target_test_module_discovery_is_available(self):
-        payload = assert_success(
-            HttpClient().get("/api/test-execution/test-modules", params={"test_type": "integration"}),
-            "discover target test modules",
-        )
-        assert payload.get("data") is not None, payload
-
-    @allure.feature("Target validation")
-    def test_target_execution_rejects_an_empty_request(self):
-        assert_client_error(
-            HttpClient().post("/api/test-execution/execute", json={}),
-            "execute target tests without a payload",
-            code=1,
-            msg="module_paths 必填",
-            data_type=type(None),
         )

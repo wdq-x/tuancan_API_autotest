@@ -16,14 +16,16 @@ def after_sales_service_client():
     return management_client()
 
 
-@allure.parent_suite("API regression")
-@allure.suite("Management platform - after-sales service")
-class TestAfterSalesService:
-    @allure.feature("Access control")
+@allure.parent_suite("接口自动化")
+@allure.suite("管理平台-售后与协同-售后服务")
+class Test售后服务:
+    @allure.feature("访问控制")
+    @allure.title("未登录访问售后工作台被拒绝")
     def test_anonymous_workbench_access_is_rejected(self):
         assert_auth_required(HttpClient(headers=default_headers.copy()).get(BASE_URL + "/workbench"), "anonymous after-sales workbench")
 
-    @allure.feature("Workbench and dashboard")
+    @allure.feature("工作台与看板")
+    @allure.title("售后工作台工单列表与看板查询")
     def test_workbench_ticket_list_and_dashboard_return_data(self, after_sales_service_client):
         for path, params, action in (
             ("/workbench", None, "get after-sales workbench"),
@@ -33,7 +35,8 @@ class TestAfterSalesService:
             payload = assert_success(after_sales_service_client.get(BASE_URL + path, params=params), action)
             assert payload.get("data") is not None, payload
 
-    @allure.feature("Ticket validation")
+    @allure.feature("工单校验")
+    @allure.title("未知工单操作被拒绝且不修改数据")
     def test_unknown_ticket_actions_are_rejected_without_mutation(self, after_sales_service_client):
         missing_ticket_id = 2147483647
         assert_client_error(

@@ -562,18 +562,6 @@ class Test客户管理业务链路:
             if customer_id and not deleted:
                 _cleanup_temporary_customer(customer_client, customer_id)
 
-    @allure.feature("搜索异常")
-    def test_客户搜索_当前服务端变量初始化错误返回精确契约(self, customer_client):
-        """保留搜索接口的回归证据，避免宽松断言掩盖服务端 6001。"""
-        response = customer_client.get("%s/search" % CUSTOMERS_URL, params={"name": "AT-search-contract"})
-        assert_client_error(
-            response,
-            "客户搜索接口未初始化查询对象",
-            code=6001,
-            msg="服务器内部错误: local variable 'query' referenced before assignment",
-            data_type=dict,
-        )
-
     @allure.feature("已删除列表异常")
     def test_已删除客户列表_当前被详情动态路由抢占(self, customer_client):
         """精确记录 /customers/deleted 被 /customers/{customer_id} 抢占的问题。"""

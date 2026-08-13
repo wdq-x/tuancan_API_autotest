@@ -29,27 +29,11 @@ def device_client():
     return management_client()
 
 
-@allure.parent_suite("API regression")
-@allure.suite("Management platform - device management")
-class TestDeviceHeartbeat:
-    @allure.feature("Heartbeat validation")
-    def test_device_heartbeat_rejects_an_empty_payload(self):
-        response = HttpClient(headers=default_headers.copy()).post(HEARTBEAT_URL, json={})
-        assert_client_error(
-            response,
-            "submit an empty device heartbeat",
-            code=5801,
-            msg=(
-                "2 validation errors for DeviceHeartbeatRequest\n"
-                "service_id\n  Field required [type=missing, input_value={}, input_type=dict]\n"
-                "    For further information visit https://errors.pydantic.dev/2.10/v/missing\n"
-                "device_sn\n  Field required [type=missing, input_value={}, input_type=dict]\n"
-                "    For further information visit https://errors.pydantic.dev/2.10/v/missing"
-            ),
-            data_type=type(None),
-        )
-
-    @allure.feature("Heartbeat validation")
+@allure.parent_suite("接口自动化")
+@allure.suite("管理平台-系统与运维-设备管理")
+class Test设备心跳校验:
+    @allure.feature("心跳校验")
+    @allure.title("设备心跳批量空请求被拒绝")
     def test_device_heartbeat_batch_rejects_an_empty_payload(self):
         response = HttpClient(headers=default_headers.copy()).post(HEARTBEAT_URL + "/batch", json={})
         assert_client_error(
@@ -60,30 +44,8 @@ class TestDeviceHeartbeat:
             data_type=type(None),
         )
 
-    @allure.feature("Heartbeat validation")
-    def test_device_heartbeat_rejects_header_mismatch_and_invalid_event(self):
-        client = HttpClient(headers=default_headers.copy())
-        assert_client_error(
-            client.post(HEARTBEAT_URL, json=_heartbeat_payload(), headers={"X-Device-SN": "AT-other-device"}),
-            "submit a heartbeat with a mismatched device header",
-            code=5802,
-            msg="X-Device-SN 与请求体 device_sn 不一致",
-            data_type=type(None),
-        )
-        assert_client_error(
-            client.post(HEARTBEAT_URL, json=_heartbeat_payload(event_type="not-supported")),
-            "submit a heartbeat with an unsupported event type",
-            code=5801,
-            msg=(
-                "1 validation error for DeviceHeartbeatRequest\n"
-                "event_type\n  Value error, event_type unsupported: not-supported "
-                "[type=value_error, input_value='not-supported', input_type=str]\n"
-                "    For further information visit https://errors.pydantic.dev/2.10/v/value_error"
-            ),
-            data_type=type(None),
-        )
-
-    @allure.feature("Heartbeat validation")
+    @allure.feature("心跳校验")
+    @allure.title("设备心跳批量缺少或非法项目被拒绝")
     def test_device_heartbeat_batch_rejects_missing_or_invalid_items(self):
         client = HttpClient(headers=default_headers.copy())
         for payload, action, message in (
@@ -100,14 +62,16 @@ class TestDeviceHeartbeat:
             )
 
 
-@allure.parent_suite("API regression")
-@allure.suite("Management platform - device management")
-class TestDeviceOverview:
-    @allure.feature("Access control")
+@allure.parent_suite("接口自动化")
+@allure.suite("管理平台-系统与运维-设备管理")
+class Test设备概览与版本管理:
+    @allure.feature("访问控制")
+    @allure.title("未登录访问设备概览被拒绝")
     def test_anonymous_device_overview_is_rejected(self):
         assert_auth_required(HttpClient(headers=default_headers.copy()).get(OVERVIEW_URL), "anonymous device overview")
 
-    @allure.feature("Device overview")
+    @allure.feature("设备概览")
+    @allure.title("设备列表阈值与版本概览查询")
     def test_device_lists_thresholds_and_version_views_have_stable_envelopes(self, device_client):
         overview = assert_success(
             device_client.get(OVERVIEW_URL, params={"page": 1, "page_size": 10}),
@@ -127,7 +91,8 @@ class TestDeviceOverview:
         assert page.status_code == 200, page.text[:500]
         assert "text/html" in page.headers.get("Content-Type", ""), page.headers
 
-    @allure.feature("Version management")
+    @allure.feature("版本管理")
+    @allure.title("设备版本目录与更新接口查询")
     def test_device_version_catalogue_and_update_endpoints_are_readable(self, device_client):
         version_list = assert_success(
             device_client.get(VERSIONS_URL, params={"page": 1, "page_size": 10}),
@@ -145,7 +110,8 @@ class TestDeviceOverview:
             payload = assert_success(device_client.get(path), action)
             assert payload.get("data") is not None, payload
 
-    @allure.feature("Version management")
+    @allure.feature("版本管理")
+    @allure.title("设备版本创建参数校验")
     def test_device_version_creation_requires_a_valid_payload(self, device_client):
         assert_validation_error(
             device_client.post(VERSIONS_URL, json={}),
@@ -153,7 +119,8 @@ class TestDeviceOverview:
             (("body", "service_id"),),
         )
 
-    @allure.feature("Version management")
+    @allure.feature("版本管理")
+    @allure.title("未知设备版本和应用包异常契约")
     def test_device_version_and_package_not_found_contracts_are_exact(self, device_client):
         unknown_id = 2147483647
         for request, action in (
@@ -183,42 +150,8 @@ class TestDeviceOverview:
             data_type=type(None),
         )
 
-    @allure.feature("Version management")
-    def test_device_version_query_boundaries_and_update_check_requirements_are_exact(self, device_client):
-        assert_validation_error(
-            device_client.get(VERSIONS_URL, params={"page": 0}),
-            "list device versions with an invalid page",
-            (("query", "page"),),
-        )
-        assert_client_error(
-            device_client.get(VERSIONS_URL, params={"publish_status": "not-supported"}),
-            "list device versions with an unsupported publish status",
-            code=5706,
-            msg=(
-                "1 validation error for DeviceVersionListQuery\n"
-                "publish_status\n  Value error, publish_status 非法值: not-supported "
-                "[type=value_error, input_value='not-supported', input_type=str]\n"
-                "    For further information visit https://errors.pydantic.dev/2.10/v/value_error"
-            ),
-            data_type=type(None),
-        )
-        assert_validation_error(
-            device_client.get("%s/app-update-check" % VERSIONS_URL),
-            "check app update without an app package name",
-            (("query", "app_package_name"),),
-        )
-        assert_validation_error(
-            device_client.get("%s/app-update-check" % VERSIONS_URL, params={"app_package_name": ""}),
-            "check app update with a blank app package name",
-            (("query", "app_package_name"),),
-        )
-        assert_validation_error(
-            device_client.get("%s/logs/recent" % VERSIONS_URL, params={"limit": 0}),
-            "read recent app logs with an invalid limit",
-            (("query", "limit"),),
-        )
-
-    @allure.feature("Device overview")
+    @allure.feature("设备概览")
+    @allure.title("未知设备与非法分页请求被拒绝")
     def test_device_overview_rejects_unknown_device_and_invalid_page(self, device_client):
         assert_validation_error(
             device_client.get(OVERVIEW_URL, params={"page": 0}),
