@@ -230,6 +230,17 @@ def _cleanup_temporary_channel(client, channel_id):
         pass
 
 
+@pytest.fixture(scope="module")
+def channel_read_fixture(channel_client):
+    """Create one isolated channel for read-only detail and search coverage."""
+    _require_write_tests()
+    channel = _create_temporary_channel(channel_client, _owner_id_for_create(channel_client))
+    try:
+        yield channel
+    finally:
+        _cleanup_temporary_channel(channel_client, channel["id"])
+
+
 @allure.parent_suite("接口自动化")
 @allure.suite("管理平台-销售管理-渠道管理")
 class Test渠道管理权限与校验:
@@ -387,10 +398,8 @@ class Test渠道管理查询接口:
             assert isinstance(trend.get(key), list) and len(trend[key]) == 7, "趋势字段 %s 应包含 7 天数据：%s" % (key, trend)
 
     @allure.feature("渠道详情")
-    def test_渠道详情_关联线索客户日志(self, channel_client):
-        channel = _first_channel(channel_client)
-        if channel is None:
-            pytest.skip("当前环境没有销售渠道管理数据，无法验证详情与关联数据接口")
+    def test_渠道详情_关联线索客户日志(self, channel_client, channel_read_fixture):
+        channel = channel_read_fixture
         channel_id = channel["id"]
 
         with allure.step("获取渠道详情"):
@@ -408,10 +417,8 @@ class Test渠道管理查询接口:
             _assert_page_payload(payload, "获取渠道%s" % label, expected_page=1)
 
     @allure.feature("渠道搜索")
-    def test_渠道搜索_名称命中返回对应渠道(self, channel_client):
-        channel = _first_channel(channel_client)
-        if channel is None:
-            pytest.skip("当前环境没有销售渠道管理数据，无法验证名称搜索")
+    def test_渠道搜索_名称命中返回对应渠道(self, channel_client, channel_read_fixture):
+        channel = channel_read_fixture
         keyword = channel["name"].strip()[: min(3, len(channel["name"].strip()))]
         with allure.step("按列表中渠道名称关键字搜索"):
             payload = _assert_success(

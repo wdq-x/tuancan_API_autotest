@@ -12,12 +12,15 @@
 """
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
+from zipfile import ZipFile
+from io import BytesIO
 
 import allure
 import pytest
+import requests
 
 from config.project_information import ENABLE_WRITE_TESTS, MOBILE_TEST_ACCOUNT, default_headers
-from utils.http_client import HttpClient
+from utils.http_client import NO_PROXIES, HttpClient
 
 
 LOGIN_URL = "/v1/login"
@@ -25,6 +28,12 @@ PROJECTS_URL = "/v1/project-delivery/projects"
 AFTER_SALES_URL = "/v1/after-sales-records"
 MOBILE_PROJECTS_URL = "%s/mobile/projects" % AFTER_SALES_URL
 MY_RECORDS_URL = "%s/my" % AFTER_SALES_URL
+PROJECT_SELECTOR_URL = "%s/projects" % AFTER_SALES_URL
+HANDLERS_URL = "%s/handlers" % AFTER_SALES_URL
+STATISTICS_URL = "%s/statistics" % AFTER_SALES_URL
+EXPORT_URL = "%s/export" % AFTER_SALES_URL
+UPLOAD_URL = "/v1/upload"
+DELETE_FILE_URL = "/v1/delete"
 
 SUCCESS_CODE = 20000
 INVALID_PARAMS_CODE = 4001
@@ -257,6 +266,58 @@ def _attachment(name, suffix):
     }
 
 
+def _upload_after_sales_attachment(client, file_name, content):
+    """上传可被售后附件下载接口读取的临时文件。"""
+    headers = {
+        key: value
+        for key, value in client.headers.items()
+        if key.lower() != "content-type"
+    }
+    response = requests.post(
+        client._url(UPLOAD_URL),
+        data={"folder": "AT-after-sales-records"},
+        files={"files": (file_name, content, "text/plain")},
+        headers=headers,
+        timeout=client.timeout,
+        proxies=NO_PROXIES,
+    )
+    payload = _assert_success(response, "上传移动端售后临时附件")
+    files = (payload.get("data") or {}).get("files") or []
+    assert len(files) == 1 and isinstance(files[0], dict), payload
+    uploaded = files[0]
+    assert uploaded.get("name") == file_name, uploaded
+    # 售后附件下载与清理测试依赖 MinIO 对象。当前本地测试环境已配置该能力。
+    assert uploaded.get("object_name"), "售后附件下载测试需要可通过 API 清理的 object_name：%s" % uploaded
+    return {
+        "attachment_id": uploaded["object_name"],
+        "file_name": file_name,
+        "file_size": uploaded.get("size") or len(content),
+        "mime_type": uploaded.get("mime_type") or "text/plain",
+        "download_url": uploaded.get("download_url"),
+        "object_name": uploaded["object_name"],
+    }
+
+
+def _delete_uploaded_object_quietly(client, object_name):
+    if not object_name:
+        return
+    try:
+        client.delete(DELETE_FILE_URL, params={"object_name": object_name})
+    except Exception:
+        pass
+
+
+def _assert_binary_attachment(response, action, expected_content, disposition):
+    assert response.status_code == 200, (
+        "%s HTTP 状态异常。url=%s, status=%s, body=%s"
+        % (action, response.url, response.status_code, response.text[:500])
+    )
+    assert response.content == expected_content, "%s 文件内容不正确：%s" % (action, response.content[:500])
+    assert disposition in (response.headers.get("Content-Disposition") or ""), (
+        "%s Content-Disposition 不正确：%s" % (action, response.headers)
+    )
+
+
 def _record_body(project_id, handler_id, request_id=None, **overrides):
     body = {
         "project_id": project_id,
@@ -455,6 +516,182 @@ class Test移动端售后记录业务链路:
             _assert_error_code(missing_response, "移动端售后记录级联删除后查询", NOT_FOUND_CODE)
             assert deleted_project_id > 0
         finally:
+            _cleanup_project_quietly(mobile_after_sales_client, project_id)
+
+    @allure.feature("管理端查询与导出")
+    def test_售后记录管理端_项目处理人筛选统计导出与真实附件下载(self, mobile_after_sales_client):
+        """以临时项目的真实附件验证管理端工作台完整读取链路。"""
+        _require_write_tests()
+        project_id = None
+        photo_object_name = None
+        signature_object_name = None
+        try:
+            project = _create_temporary_project(mobile_after_sales_client, "管理端工作台")
+            project_id = project["id"]
+            handler = next(
+                (item for item in _get_mobile_project_members(mobile_after_sales_client, project_id) if item.get("is_active")),
+                None,
+            )
+            assert handler is not None, "临时项目没有可选的活动处理人员"
+
+            photo_content = b"AT after sales photo attachment verification"
+            signature_content = b"AT after sales signature attachment verification"
+            with allure.step("上传可通过售后附件接口访问的临时照片和签字文件"):
+                photo = _upload_after_sales_attachment(
+                    mobile_after_sales_client,
+                    "AT-after-sales-photo-%s.txt" % uuid4().hex[:10],
+                    photo_content,
+                )
+                photo_object_name = photo["object_name"]
+                signature = _upload_after_sales_attachment(
+                    mobile_after_sales_client,
+                    "AT-after-sales-signature-%s.txt" % uuid4().hex[:10],
+                    signature_content,
+                )
+                signature_object_name = signature["object_name"]
+
+            with allure.step("创建带真实附件的临时售后记录"):
+                body = _record_body(
+                    project_id,
+                    handler["user_id"],
+                    unit_name="AT-售后管理端单位-%s" % uuid4().hex[:8],
+                    photo_attachments=[photo],
+                    customer_signature=signature,
+                    remark="AT-售后管理端筛选、统计和导出验证",
+                )
+                create_payload = _assert_success(
+                    mobile_after_sales_client.post(AFTER_SALES_URL, json=body),
+                    "创建管理端售后记录测试数据",
+                )
+            record = create_payload["data"]
+            _assert_record_shape(record, "创建管理端售后记录测试数据")
+            record_id = record["id"]
+
+            with allure.step("管理端项目选择器按临时项目名称搜索"):
+                projects_payload = _assert_success(
+                    mobile_after_sales_client.get(
+                        PROJECT_SELECTOR_URL,
+                        params={"keyword": project["project_name"], "page": 1, "page_size": 20},
+                    ),
+                    "获取管理端售后项目选择器",
+                )
+            projects = _assert_page_payload(projects_payload, "获取管理端售后项目选择器", 1, 20)
+            selected_project = next((item for item in projects["items"] if item.get("project_id") == project_id), None)
+            assert selected_project is not None, projects
+            _assert_mobile_project_shape(selected_project, "管理端售后可选项目")
+
+            with allure.step("管理端处理人选择器按处理人员回查"):
+                handlers_payload = _assert_success(
+                    mobile_after_sales_client.get(HANDLERS_URL, params={"page": 1, "page_size": 100}),
+                    "获取管理端售后处理人列表",
+                )
+            handlers = _assert_page_payload(handlers_payload, "获取管理端售后处理人列表", 1, 100)
+            assert any(item.get("id") == handler["user_id"] for item in handlers["items"]), handlers
+
+            filters = {
+                "project_id": project_id,
+                "unit_name": body["unit_name"],
+                "handler_id": handler["user_id"],
+                "handling_result": "resolved",
+                "page": 1,
+                "page_size": 20,
+            }
+            with allure.step("按项目、单位、处理人和结果筛选管理端售后记录"):
+                records_payload = _assert_success(
+                    mobile_after_sales_client.get(AFTER_SALES_URL, params=filters),
+                    "筛选管理端售后记录",
+                )
+            records = _assert_page_payload(records_payload, "筛选管理端售后记录", 1, 20)
+            managed_record = next((item for item in records["items"] if item.get("id") == record_id), None)
+            assert managed_record is not None, records
+            _assert_record_shape(managed_record, "管理端筛选售后记录", expected_record_id=record_id)
+
+            with allure.step("按相同筛选条件统计售后记录"):
+                statistics_payload = _assert_success(
+                    mobile_after_sales_client.get(
+                        STATISTICS_URL,
+                        params={key: value for key, value in filters.items() if key not in {"page", "page_size"}},
+                    ),
+                    "获取管理端售后统计",
+                )
+            statistics = statistics_payload["data"]
+            assert statistics.get("total") == 1, statistics
+            assert statistics.get("resolved") == 1, statistics
+            assert statistics.get("follow_up") == 0, statistics
+            assert statistics.get("unresolved") == 0, statistics
+            assert statistics.get("handler_count") == 1, statistics
+            assert isinstance(statistics.get("current_month_label"), str), statistics
+
+            with allure.step("按临时项目筛选导出指定字段的 Excel"):
+                export_response = mobile_after_sales_client.get(
+                    EXPORT_URL,
+                    params=[
+                        ("project_id", project_id),
+                        ("fields", "record_no"),
+                        ("fields", "project_name"),
+                        ("fields", "photo_links"),
+                        ("fields", "signature_link"),
+                    ],
+                )
+            assert export_response.status_code == 200, export_response.text[:500]
+            assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in (
+                export_response.headers.get("Content-Type") or ""
+            ), export_response.headers
+            assert "attachment" in (export_response.headers.get("Content-Disposition") or ""), export_response.headers
+            with ZipFile(BytesIO(export_response.content)) as workbook_archive:
+                assert "xl/worksheets/sheet1.xml" in workbook_archive.namelist(), workbook_archive.namelist()
+                worksheet = workbook_archive.read("xl/worksheets/sheet1.xml")
+                workbook_xml = b"".join(
+                    workbook_archive.read(name)
+                    for name in workbook_archive.namelist()
+                    if name.startswith("xl/") and name.endswith(".xml")
+                )
+            # openpyxl may use shared strings or inline strings depending on the workbook shape.
+            assert record["record_no"].encode("utf-8") in workbook_xml, workbook_xml[:2000]
+            assert b"photo_0" in workbook_xml and b"signature" in workbook_xml, workbook_xml[:4000]
+            assert worksheet, "导出的 Excel 工作表为空"
+
+            with allure.step("从售后记录详情返回的下载地址获取真实照片与签字附件"):
+                detail_payload = _assert_success(
+                    mobile_after_sales_client.get("%s/%s" % (AFTER_SALES_URL, record_id)),
+                    "获取管理端售后记录详情",
+                )
+            detail = detail_payload["data"]
+            _assert_record_shape(detail, "管理端售后记录详情", expected_record_id=record_id)
+            photo_download_response = mobile_after_sales_client.get(detail["photo_attachments"][0]["download_url"])
+            _assert_binary_attachment(
+                photo_download_response,
+                "下载管理端售后照片附件",
+                photo_content,
+                "attachment",
+            )
+            signature_preview_response = mobile_after_sales_client.get(detail["customer_signature"]["preview_url"])
+            _assert_binary_attachment(
+                signature_preview_response,
+                "预览管理端售后签字附件",
+                signature_content,
+                "inline",
+            )
+
+            with allure.step("删除上传的 MinIO 临时附件"):
+                photo_delete_payload = _assert_success(
+                    mobile_after_sales_client.delete(DELETE_FILE_URL, params={"object_name": photo_object_name}),
+                    "删除移动端售后照片附件",
+                )
+                assert (photo_delete_payload.get("data") or {}).get("deleted") is True, photo_delete_payload
+                photo_object_name = None
+                signature_delete_payload = _assert_success(
+                    mobile_after_sales_client.delete(DELETE_FILE_URL, params={"object_name": signature_object_name}),
+                    "删除移动端售后签字附件",
+                )
+                assert (signature_delete_payload.get("data") or {}).get("deleted") is True, signature_delete_payload
+                signature_object_name = None
+
+            _close_and_delete_project(mobile_after_sales_client, project_id)
+            project_id = None
+        finally:
+            _delete_uploaded_object_quietly(mobile_after_sales_client, photo_object_name)
+            _delete_uploaded_object_quietly(mobile_after_sales_client, signature_object_name)
             _cleanup_project_quietly(mobile_after_sales_client, project_id)
 
     @allure.feature("业务异常")

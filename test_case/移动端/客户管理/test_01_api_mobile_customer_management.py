@@ -8,8 +8,8 @@
 - ``add_customer_controller.dart``：移动端新增客户必须先选择来源线索；普通新增
   调用 ``POST /v1/customers``，线索转换调用 ``POST /v1/leads/{id}/convert-to-customer``。
 
-写入场景只创建 ``AT-移动端客户-``、``AT-移动端客户线索-`` 前缀的临时数据，并在
-用例结束时删除。来源渠道复用环境已有的合作中渠道，避免修改环境原有配置。
+写入场景只创建 ``AT-`` 前缀的临时数据，并在用例结束时删除。模块会创建独立的
+合作中来源渠道，避免依赖或修改环境原有配置。
 """
 from datetime import date, timedelta
 from uuid import uuid4
@@ -18,6 +18,8 @@ import allure
 import pytest
 
 from config.project_information import ENABLE_WRITE_TESTS, MOBILE_TEST_ACCOUNT, default_headers
+from utils.api_test_data import create_active_channel, delete_channel
+from utils.api_test_support import management_client
 from utils.http_client import HttpClient
 
 
@@ -154,6 +156,19 @@ def mobile_customer_client():
     client.headers.pop("Authorization", None)
 
 
+@pytest.fixture(scope="module")
+def mobile_customer_active_channel():
+    """Provide one isolated, active source channel for all mobile customer write flows."""
+    _require_write_tests()
+    client = management_client()
+    channel = create_active_channel(client, "AT-mobile-customer-channel")
+    try:
+        yield channel
+    finally:
+        delete_channel(client, channel["id"])
+        client.headers.pop("Authorization", None)
+
+
 def _mobile_customer_body(name=None, lead_id=None, **overrides):
     """按 CustomerCreateParams.toJson 构造移动端表单提交体。"""
     valid_start = date.today()
@@ -177,19 +192,6 @@ def _mobile_customer_body(name=None, lead_id=None, **overrides):
         body["lead_id"] = lead_id
     body.update(overrides)
     return body
-
-
-def _get_active_channel(client):
-    payload = _assert_success(
-        client.get(CHANNEL_OPTIONS_URL, params={"status": "active", "limit": 500}),
-        "获取移动端客户来源渠道选项",
-    )
-    channels = payload["data"]
-    assert isinstance(channels, list), "移动端客户来源渠道选项 data 应为数组：%s" % payload
-    for channel in channels:
-        if isinstance(channel, dict) and isinstance(channel.get("id"), int) and channel["id"] > 0:
-            return channel
-    pytest.skip("当前测试环境没有可用于移动端客户来源线索的合作中渠道")
 
 
 def _create_temporary_lead(client, channel):
@@ -331,13 +333,13 @@ class Test移动端客户管理业务链路:
     """覆盖新增、来源关联、详情、续费、状态变更、删除和线索转客户。"""
 
     @allure.feature("新增与详情")
-    def test_移动端客户_选择线索创建查询删除完整链路(self, mobile_customer_client):
+    def test_移动端客户_选择线索创建查询删除完整链路(self, mobile_customer_client, mobile_customer_active_channel):
         """将新增、详情、列表回查和删除拆为独立闭环，便于 CI 定位失败环节。"""
         _require_write_tests()
         lead_id = None
         customer_id = None
         try:
-            channel = _get_active_channel(mobile_customer_client)
+            channel = mobile_customer_active_channel
             lead = _create_temporary_lead(mobile_customer_client, channel)
             lead_id = lead["id"]
 
@@ -380,14 +382,14 @@ class Test移动端客户管理业务链路:
             _cleanup_temporary_lead(mobile_customer_client, lead_id)
 
     @allure.feature("新增异常")
-    def test_移动端客户_同名客户创建被拒绝(self, mobile_customer_client):
+    def test_移动端客户_同名客户创建被拒绝(self, mobile_customer_client, mobile_customer_active_channel):
         """移动端表单提交重复客户名称时，服务端应明确拒绝，不产生第二条客户。"""
         _require_write_tests()
         first_lead_id = None
         second_lead_id = None
         customer_id = None
         try:
-            channel = _get_active_channel(mobile_customer_client)
+            channel = mobile_customer_active_channel
             first_lead = _create_temporary_lead(mobile_customer_client, channel)
             second_lead = _create_temporary_lead(mobile_customer_client, channel)
             first_lead_id = first_lead["id"]
@@ -414,12 +416,12 @@ class Test移动端客户管理业务链路:
             _cleanup_temporary_lead(mobile_customer_client, second_lead_id)
 
     @allure.feature("新增与详情")
-    def test_移动端客户_从选择线索新增筛选详情与附件(self, mobile_customer_client):
+    def test_移动端客户_从选择线索新增筛选详情与附件(self, mobile_customer_client, mobile_customer_active_channel):
         _require_write_tests()
         lead_id = None
         customer_id = None
         try:
-            channel = _get_active_channel(mobile_customer_client)
+            channel = mobile_customer_active_channel
             lead = _create_temporary_lead(mobile_customer_client, channel)
             lead_id = lead["id"]
             attachment = {
@@ -482,12 +484,12 @@ class Test移动端客户管理业务链路:
             _cleanup_temporary_lead(mobile_customer_client, lead_id)
 
     @allure.feature("续费与状态")
-    def test_移动端客户_续费禁用启用和删除(self, mobile_customer_client):
+    def test_移动端客户_续费禁用启用和删除(self, mobile_customer_client, mobile_customer_active_channel):
         _require_write_tests()
         lead_id = None
         customer_id = None
         try:
-            channel = _get_active_channel(mobile_customer_client)
+            channel = mobile_customer_active_channel
             lead = _create_temporary_lead(mobile_customer_client, channel)
             lead_id = lead["id"]
             customer, body = _create_customer_from_selected_lead(mobile_customer_client, lead)
@@ -554,11 +556,11 @@ class Test移动端客户管理业务链路:
             _cleanup_temporary_lead(mobile_customer_client, lead_id)
 
     @allure.feature("线索转客户")
-    def test_移动端客户_线索转客户表单和关联清理(self, mobile_customer_client):
+    def test_移动端客户_线索转客户表单和关联清理(self, mobile_customer_client, mobile_customer_active_channel):
         _require_write_tests()
         lead_id = None
         try:
-            channel = _get_active_channel(mobile_customer_client)
+            channel = mobile_customer_active_channel
             lead = _create_temporary_lead(mobile_customer_client, channel)
             lead_id = lead["id"]
             body = _mobile_customer_body(lead_id=lead_id)

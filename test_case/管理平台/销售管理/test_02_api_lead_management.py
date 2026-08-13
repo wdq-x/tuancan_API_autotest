@@ -13,9 +13,11 @@ from uuid import uuid4
 
 import allure
 import pytest
+import requests
 
 from config.project_information import ENABLE_WRITE_TESTS, MANAGEMENT_TEST_ACCOUNT, default_headers
-from utils.http_client import HttpClient
+from utils.api_test_support import assert_validation_error
+from utils.http_client import HttpClient, NO_PROXIES
 
 
 LOGIN_URL = "/v1/login"
@@ -229,6 +231,18 @@ def _cleanup_temporary_channel(client, channel_id):
         client.delete("%s/%s" % (CHANNELS_URL, channel_id))
     except Exception:
         pass
+
+
+def _post_form(client, path, data):
+    """发送表单请求，移除 HttpClient 默认 JSON Content-Type。"""
+    headers = {key: value for key, value in client.headers.items() if key.lower() != "content-type"}
+    return requests.post(
+        client._url(path),
+        data=data,
+        headers=headers,
+        timeout=client.timeout,
+        proxies=NO_PROXIES,
+    )
 
 
 def _assert_error_code(response, action, expected_code, expected_http_status=200):
@@ -672,3 +686,102 @@ class Test线索管理业务链路:
         finally:
             _cleanup_temporary_lead(lead_client, lead_id)
             _cleanup_temporary_channel(lead_client, channel_id)
+
+    @allure.feature("兼容接口")
+    def test_线索表单_常规列表与关联已有客户(self, lead_client):
+        """验证仍被保留的表单入口和 convert 关联已有客户契约。"""
+        _require_write_tests()
+        channel_id = None
+        lead_id = None
+        customer_id = None
+        try:
+            owner_id = _owner_id_for_create(lead_client)
+            channel = _create_temporary_channel(lead_client, owner_id)
+            channel_id = channel["id"]
+
+            form_name = "AT-线索表单-%s" % uuid4().hex[:12]
+            creator = str(owner_id)
+            with allure.step("通过 multipart 表单入口创建临时线索"):
+                form_response = _post_form(
+                    lead_client,
+                    "%s/form" % LEADS_URL,
+                    {
+                        "name": form_name,
+                        "business_type": "education",
+                        "creator": creator,
+                        "remark": "AT 表单线索自动化数据",
+                        "channel_id": str(channel_id),
+                    },
+                )
+            form_payload = _assert_success(form_response, "表单创建 AT 线索")
+            lead = form_payload["data"]
+            lead_id = lead["id"]
+            _assert_lead_shape(lead, "表单创建 AT 线索", expected_channel_id=channel_id)
+
+            with allure.step("通过常规列表接口检索表单线索"):
+                list_payload = _assert_success(
+                    lead_client.get(LEADS_URL, params={"name": form_name, "page": 1, "page_size": 10}),
+                    "常规列表查询 AT 表单线索",
+                )
+            list_data = _assert_page_payload(list_payload, "常规列表查询 AT 表单线索", expected_page=1, expected_page_size=10)
+            assert any(item.get("id") == lead_id for item in list_data["items"]), list_data
+
+            customer_name = "AT-线索关联客户-%s" % uuid4().hex[:12]
+            with allure.step("创建独立 AT 客户供线索 convert 关联"):
+                customer_payload = _assert_success(
+                    lead_client.post(
+                        "/v1/customers",
+                        json={
+                            "name": customer_name,
+                            "deployment_type": "public_cloud",
+                            "customer_type": "school",
+                            "manager_name": "接口自动化客户联系人",
+                            "manager_phone": "13900000000",
+                            "service_period": 12,
+                            "call_domain_api": False,
+                        },
+                    ),
+                    "创建 convert 目标 AT 客户",
+                )
+            customer_id = (customer_payload.get("data") or {}).get("id")
+            assert isinstance(customer_id, int) and customer_id > 0, customer_payload
+
+            with allure.step("通过 form convert 接口关联既有客户"):
+                convert_response = _post_form(
+                    lead_client,
+                    "%s/%s/convert" % (LEADS_URL, lead_id),
+                    {"customer_id": str(customer_id), "remark": "AT convert existing customer"},
+                )
+            converted_payload = _assert_success(convert_response, "关联已有 AT 客户")
+            converted = converted_payload["data"]
+            assert converted.get("id") == lead_id and converted.get("status") == "converted", converted_payload
+            assert converted.get("converted_customer_id") == customer_id, converted_payload
+            converted_customers = converted.get("converted_customers") or []
+            assert any(item.get("id") == customer_id for item in converted_customers), converted_payload
+
+            with allure.step("回查目标客户已继承线索和渠道关联"):
+                customer_detail_payload = _assert_success(
+                    lead_client.get("/v1/customers/%s" % customer_id),
+                    "回查 convert 目标 AT 客户",
+                )
+            customer_detail = customer_detail_payload.get("data") or {}
+            assert customer_detail.get("lead_id") == lead_id, customer_detail_payload
+            assert customer_detail.get("channel_id") == channel_id, customer_detail_payload
+        finally:
+            _cleanup_temporary_lead(lead_client, lead_id)
+            if customer_id:
+                try:
+                    lead_client.delete("/v1/customers/%s" % customer_id)
+                except Exception:
+                    pass
+            _cleanup_temporary_channel(lead_client, channel_id)
+
+    @allure.feature("兼容接口异常")
+    def test_标准线索列表_当前被详情动态路由抢占(self, lead_client):
+        """精确记录 /leads/list 当前被 /leads/{lead_id} 抢占的路由顺序问题。"""
+        response = lead_client.get("%s/list" % LEADS_URL, params={"page": 1, "page_size": 10})
+        assert_validation_error(
+            response,
+            "标准线索列表路由冲突",
+            expected_locations=[("path", "lead_id")],
+        )

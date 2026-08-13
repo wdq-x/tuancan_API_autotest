@@ -6,7 +6,7 @@
 基础数据一致性。写入场景创建唯一的临时项目，并在测试结束时关闭并删除，避免
 污染被测环境。
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import math
 from uuid import uuid4
 
@@ -14,6 +14,7 @@ import allure
 import pytest
 
 from config.project_information import ENABLE_WRITE_TESTS, MANAGEMENT_TEST_ACCOUNT, default_headers
+from utils.api_test_data import create_active_channel, create_normal_customer, delete_channel, delete_customer
 from utils.http_client import HttpClient
 
 
@@ -213,6 +214,79 @@ def project_client():
     client.headers.pop("Authorization", None)
 
 
+@pytest.fixture(scope="module")
+def project_list_fixture(project_client):
+    """Build an isolated channel -> customer -> project -> risk chain for list coverage."""
+    _require_write_tests()
+    channel = None
+    customer = None
+    project = None
+    try:
+        channel = create_active_channel(project_client, "AT-project-list-channel")
+        customer = create_normal_customer(project_client, "AT-project-list-customer", channel)
+        project_name = "AT-project-list-%s" % uuid4().hex[:12]
+        project_payload = _assert_success(
+            project_client.post(
+                PROJECTS_URL,
+                json={
+                    "project_name": project_name,
+                    "customer_id": customer["id"],
+                    "customer_name": customer["name"],
+                    "contract_no": "AT-PROJECT-%s" % uuid4().hex[:8],
+                    "contract_summary": "AT isolated project-list fixture",
+                    "is_external_purchase": True,
+                    "planned_start_date": date.today().isoformat(),
+                    "planned_end_date": (date.today() + timedelta(days=7)).isoformat(),
+                    "remark": "AT isolated API regression fixture; safe to delete",
+                },
+            ),
+            "create AT project-list project",
+        )
+        project = project_payload["data"]
+        _assert_project_shape(project, "create AT project-list project")
+
+        rectification_payload = _assert_success(
+            project_client.post(
+                "%s/%s/rectifications" % (PROJECTS_URL, project["id"]),
+                json={
+                    "title": "AT project-list risk",
+                    "description": "AT isolated open rectification for project risk filtering",
+                    "severity": "normal",
+                    "owner_id": project["project_manager_id"],
+                    "due_at": (datetime.now() + timedelta(days=7)).isoformat(),
+                },
+            ),
+            "create AT project-list risk rectification",
+        )
+        rectification = rectification_payload["data"]
+        assert isinstance(rectification.get("id"), int) and rectification["id"] > 0, rectification_payload
+
+        project_payload = _assert_success(
+            project_client.get("%s/%s" % (PROJECTS_URL, project["id"])),
+            "reload AT project-list project",
+        )
+        project = project_payload["data"]
+        _assert_project_shape(project, "reload AT project-list project")
+        assert "acceptance_blocked" in project["risks"], project
+        yield {"channel": channel, "customer": customer, "project": project}
+    finally:
+        if project:
+            try:
+                _close_and_delete_project(project_client, project["id"])
+            except Exception:
+                pass
+        if customer:
+            try:
+                delete_customer(project_client, customer["id"])
+            except Exception:
+                pass
+        if channel:
+            try:
+                delete_channel(project_client, channel["id"])
+            except Exception:
+                pass
+
+
 @allure.parent_suite("接口自动化")
 @allure.suite("管理平台-项目管理-项目列表")
 class Test项目列表访问控制:
@@ -243,7 +317,7 @@ class Test项目列表查询:
     """验证项目列表页面的读取、筛选与详情跳转依赖的数据契约。"""
 
     @allure.feature("项目列表")
-    def test_项目列表_分页结构与字段完整(self, project_client):
+    def test_项目列表_分页结构与字段完整(self, project_client, project_list_fixture):
         with allure.step("按第一页、每页两条获取项目列表"):
             payload = _assert_success(
                 project_client.get(PROJECTS_URL, params={"page": 1, "page_size": 2}),
@@ -254,10 +328,8 @@ class Test项目列表查询:
             _assert_project_shape(project, "获取项目列表")
 
     @allure.feature("项目列表筛选")
-    def test_项目列表_按关键字搜索命中原项目(self, project_client):
-        project = _first_project(project_client)
-        if project is None:
-            pytest.skip("当前环境没有项目数据，无法验证关键字搜索")
+    def test_项目列表_按关键字搜索命中原项目(self, project_client, project_list_fixture):
+        project = project_list_fixture["project"]
         _assert_project_shape(project, "项目列表取样")
 
         with allure.step("按项目编号进行关键字搜索"):
@@ -274,10 +346,8 @@ class Test项目列表查询:
         )
 
     @allure.feature("项目列表筛选")
-    def test_项目列表_按状态和负责人筛选(self, project_client):
-        project = _first_project(project_client)
-        if project is None:
-            pytest.skip("当前环境没有项目数据，无法验证状态和负责人筛选")
+    def test_项目列表_按状态和负责人筛选(self, project_client, project_list_fixture):
+        project = project_list_fixture["project"]
         _assert_project_shape(project, "项目列表取样")
 
         with allure.step("按取样项目状态筛选"):
@@ -293,8 +363,7 @@ class Test项目列表查询:
         assert all(item.get("status") == project["status"] for item in status_data["items"]), "状态筛选返回了其他状态：%s" % status_data
 
         owner_id = project.get("project_manager_id")
-        if not isinstance(owner_id, int) or owner_id <= 0:
-            pytest.skip("取样项目未配置有效项目负责人，无法验证负责人筛选")
+        assert isinstance(owner_id, int) and owner_id > 0, "AT 项目未配置有效项目负责人：%s" % project
         with allure.step("按取样项目负责人筛选"):
             owner_payload = _assert_success(
                 project_client.get(
@@ -308,15 +377,8 @@ class Test项目列表查询:
         assert all(item.get("project_manager_id") == owner_id for item in owner_data["items"]), "负责人筛选返回了其他负责人项目：%s" % owner_data
 
     @allure.feature("项目列表筛选")
-    def test_项目列表_按风险筛选(self, project_client):
-        payload = _assert_success(
-            project_client.get(PROJECTS_URL, params={"page": 1, "page_size": 100}),
-            "获取项目列表（风险取样）",
-        )
-        data = _assert_page_payload(payload, "获取项目列表（风险取样）", expected_page=1, expected_page_size=100)
-        candidate = next((item for item in data["items"] if item.get("risks")), None)
-        if candidate is None:
-            pytest.skip("当前环境没有带风险的项目，无法验证风险筛选")
+    def test_项目列表_按风险筛选(self, project_client, project_list_fixture):
+        candidate = project_list_fixture["project"]
         _assert_project_shape(candidate, "风险项目取样")
         risk_type = candidate["risks"][0]
 
@@ -347,7 +409,7 @@ class Test项目列表查询:
         assert data["total"] == 0 and data["items"] == [], "不存在的关键字应返回空列表：%s" % data
 
     @allure.feature("项目列表筛选")
-    def test_项目列表_首页重点筛选结果正确(self, project_client):
+    def test_项目列表_首页重点筛选结果正确(self, project_client, project_list_fixture):
         expectations = {
             "high_risk": lambda item: bool(item.get("risks")) or item.get("status") == "paused",
             "rectifying_focus": lambda item: item.get("status") == "rectifying" or "acceptance_blocked" in item.get("risks", []),
@@ -367,10 +429,8 @@ class Test项目列表查询:
                 assert matches(project), "重点筛选 %s 返回了不符合条件的项目：%s" % (filter_type, project)
 
     @allure.feature("项目详情")
-    def test_项目详情_与列表项目基础字段一致(self, project_client):
-        project = _first_project(project_client)
-        if project is None:
-            pytest.skip("当前环境没有项目数据，无法验证项目详情")
+    def test_项目详情_与列表项目基础字段一致(self, project_client, project_list_fixture):
+        project = project_list_fixture["project"]
         _assert_project_shape(project, "项目列表取样")
 
         with allure.step("获取列表取样项目的详情"):
@@ -391,7 +451,7 @@ class Test项目创建客户选择:
     """验证新建项目弹窗中客户/学校选择器的接口数据。"""
 
     @allure.feature("客户选择")
-    def test_客户选择器_正常客户分页和字段完整(self, project_client):
+    def test_客户选择器_正常客户分页和字段完整(self, project_client, project_list_fixture):
         with allure.step("获取可选择的正常客户"):
             payload = _assert_success(
                 project_client.get(
@@ -405,18 +465,8 @@ class Test项目创建客户选择:
             _assert_customer_picker_shape(customer, "获取正常客户列表")
 
     @allure.feature("客户选择")
-    def test_客户选择器_按名称和渠道筛选(self, project_client):
-        payload = _assert_success(
-            project_client.get(
-                CUSTOMERS_URL,
-                params={"status": "normal", "page": 1, "page_size": 100},
-            ),
-            "获取正常客户列表（取样）",
-        )
-        data = _assert_customer_page_payload(payload, "获取正常客户列表（取样）", expected_page=1, expected_page_size=100)
-        if not data["items"]:
-            pytest.skip("当前环境没有正常客户，无法验证客户选择器筛选")
-        customer = data["items"][0]
+    def test_客户选择器_按名称和渠道筛选(self, project_client, project_list_fixture):
+        customer = project_list_fixture["customer"]
         _assert_customer_picker_shape(customer, "客户选择器取样")
 
         with allure.step("按取样客户名称筛选"):
@@ -430,9 +480,8 @@ class Test项目创建客户选择:
         name_data = _assert_customer_page_payload(name_payload, "客户名称筛选", expected_page=1, expected_page_size=100)
         assert any(item.get("id") == customer["id"] for item in name_data["items"]), "客户名称筛选未命中取样客户：%s" % name_data
 
-        channel_customer = next((item for item in data["items"] if str(item.get("channel_name") or "").strip()), None)
-        if channel_customer is None:
-            pytest.skip("当前环境正常客户均未关联渠道，无法验证渠道名称筛选")
+        channel_customer = customer
+        assert str(channel_customer.get("channel_name") or "").strip(), "AT 客户未关联测试渠道：%s" % channel_customer
         with allure.step("按取样客户渠道名称筛选"):
             channel_payload = _assert_success(
                 project_client.get(

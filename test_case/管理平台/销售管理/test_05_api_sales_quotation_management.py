@@ -372,11 +372,28 @@ class Test销售报价单查询与校验:
     def test_报价单不支持的PDF与分享接口_返回业务限制(self, sales_quotation_client):
         with allure.step("调用当前版本不支持的 PDF 导出接口"):
             pdf_response = sales_quotation_client.post("%s/%s/export/pdf" % (SALES_QUOTATIONS_URL, 2147483647), json={})
-        _assert_error_code(pdf_response, "报价单 PDF 导出", OPERATION_NOT_ALLOWED_CODE)
+        pdf_payload = _assert_error_code(pdf_response, "报价单 PDF 导出", OPERATION_NOT_ALLOWED_CODE)
+        assert pdf_payload.get("msg") == "本期报价单仅支持 xlsx 导出", pdf_payload
 
         with allure.step("调用当前版本不支持的分享接口"):
             share_response = sales_quotation_client.post("%s/%s/share" % (SALES_QUOTATIONS_URL, 2147483647), json={})
-        _assert_error_code(share_response, "创建报价单分享链接", OPERATION_NOT_ALLOWED_CODE)
+        share_payload = _assert_error_code(share_response, "创建报价单分享链接", OPERATION_NOT_ALLOWED_CODE)
+        assert share_payload.get("msg") == "本期报价单不支持分享链接", share_payload
+
+        with allure.step("调用公开分享读取、明细排序和保存 SKU 兼容接口"):
+            public_share_response = sales_quotation_client.get("/v1/sales/share/AT-share-token")
+            reorder_response = sales_quotation_client.put(
+                "%s/%s/items/reorder" % (SALES_QUOTATIONS_URL, 2147483647), json={"items": []}
+            )
+            sku_response = sales_quotation_client.post(
+                "%s/%s/items/%s/save-to-sku" % (SALES_QUOTATIONS_URL, 2147483647, 2147483647), json={}
+            )
+        public_share_payload = _assert_error_code(public_share_response, "读取报价单公开分享", OPERATION_NOT_ALLOWED_CODE)
+        reorder_payload = _assert_error_code(reorder_response, "报价明细排序兼容入口", OPERATION_NOT_ALLOWED_CODE)
+        sku_payload = _assert_error_code(sku_response, "报价明细保存 SKU 兼容入口", OPERATION_NOT_ALLOWED_CODE)
+        assert public_share_payload.get("msg") == "本期报价单不支持分享链接", public_share_payload
+        assert reorder_payload.get("msg") == "请通过保存报价工作台调整明细排序", reorder_payload
+        assert sku_payload.get("msg") == "报价明细不回写销售商品", sku_payload
 
 
 @allure.parent_suite("接口自动化")
@@ -615,6 +632,60 @@ class Test销售报价单业务链路:
                     },
                 )
             _assert_error_code(response, "使用停用商品保存报价明细", PRODUCT_DISABLED_CODE)
+        finally:
+            _cleanup_temporary_quote(sales_quotation_client, quote_id)
+            _cleanup_temporary_product(sales_quotation_client, product_id)
+            _cleanup_temporary_customer(sales_quotation_client, customer_id)
+
+    @allure.feature("兼容工作流")
+    def test_报价单兼容别名_issue_导出Excel_取消作废(self, sales_quotation_client):
+        """验证当前新版报价单的 issue、export/excel、cancel 别名都作用于 /sales/quotations。"""
+        _require_write_tests()
+        customer_id = None
+        product_id = None
+        quote_id = None
+        try:
+            customer = _create_temporary_customer(sales_quotation_client)
+            customer_id = customer["id"]
+            product = _create_temporary_product(sales_quotation_client)
+            product_id = product["id"]
+            quote = _create_temporary_quote(sales_quotation_client, customer_id)
+            quote_id = quote["id"]
+            workspace = _save_workspace_with_product(sales_quotation_client, quote, product, title_suffix="兼容别名")
+
+            with allure.step("从草稿调用 issue，自动提交审核并确认"):
+                issue_payload = _assert_success(
+                    sales_quotation_client.post("%s/%s/issue" % (SALES_QUOTATIONS_URL, quote_id), json={}),
+                    "兼容 issue 报价单",
+                )
+            issued = issue_payload["data"]
+            _assert_workspace_shape(issued, "兼容 issue 报价单", expected_quote_id=quote_id)
+            assert issued.get("status") == "confirmed", issued
+
+            with allure.step("通过 export/excel 兼容入口正式导出"):
+                export_payload = _assert_success(
+                    sales_quotation_client.post("%s/%s/export/excel" % (SALES_QUOTATIONS_URL, quote_id), json={}),
+                    "兼容 Excel 导出报价单",
+                )
+            export_data = export_payload.get("data") or {}
+            assert isinstance(export_data.get("download_url"), str) and export_data["download_url"], export_payload
+            assert (export_data.get("export_record") or {}).get("export_type") == "official", export_payload
+
+            with allure.step("通过 cancel 兼容入口作废，再删除 AT 报价单"):
+                cancel_payload = _assert_success(
+                    sales_quotation_client.post(
+                        "%s/%s/cancel" % (SALES_QUOTATIONS_URL, quote_id),
+                        json={"reason": "AT compatibility cancel cleanup"},
+                    ),
+                    "兼容 cancel 报价单",
+                )
+                delete_payload = _assert_success(
+                    sales_quotation_client.delete("%s/%s" % (SALES_QUOTATIONS_URL, quote_id)),
+                    "删除兼容别名 AT 报价单",
+                )
+            assert cancel_payload["data"].get("status") == "voided", cancel_payload
+            assert delete_payload["data"].get("deleted") is True, delete_payload
+            quote_id = None
         finally:
             _cleanup_temporary_quote(sales_quotation_client, quote_id)
             _cleanup_temporary_product(sales_quotation_client, product_id)

@@ -13,9 +13,10 @@ from uuid import uuid4
 
 import allure
 import pytest
+import requests
 
 from config.project_information import ENABLE_WRITE_TESTS, MOBILE_TEST_ACCOUNT, default_headers
-from utils.http_client import HttpClient
+from utils.http_client import NO_PROXIES, HttpClient
 
 
 LOGIN_URL = "/v1/login"
@@ -259,6 +260,30 @@ def _create_complete_hierarchy(client, survey_id):
     position = position_payload["data"]
     _assert_position_shape(position, "移动端新增勘察点位")
     return school, device, position
+
+
+def _assert_docx_response(response, action, expected_disposition):
+    assert response.status_code == 200, (
+        "%s HTTP 状态异常。url=%s, status=%s, body=%s"
+        % (action, response.url, response.status_code, response.text[:500])
+    )
+    content_type = response.headers.get("Content-Type", "")
+    disposition = response.headers.get("Content-Disposition", "")
+    assert "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in content_type, (
+        "%s Content-Type 不正确：%s" % (action, content_type)
+    )
+    assert expected_disposition in disposition, "%s Content-Disposition 不正确：%s" % (action, disposition)
+    assert response.content[:2] == b"PK", "%s 返回内容不是 docx 文件：%s" % (action, response.content[:100])
+
+
+def _get_binary(client, path, params=None):
+    return requests.get(
+        client._url(path),
+        params=params,
+        headers=client.headers,
+        timeout=client.timeout,
+        proxies=NO_PROXIES,
+    )
 
 
 @allure.parent_suite("接口自动化")
@@ -531,6 +556,246 @@ class Test移动端点位勘察业务链路:
                     json=duplicate_draft,
                 )
             _assert_error_code(duplicate_response, "移动端提交重名学校勘察草稿", NAME_ALREADY_EXISTS_CODE)
+        finally:
+            _cleanup_survey_quietly(mobile_site_survey_client, survey_id)
+
+    @allure.feature("层级编辑与操作日志")
+    def test_移动端点位勘察_汇总层级编辑删除和日志回查(self, mobile_site_survey_client):
+        _require_write_tests()
+        survey_id = None
+        try:
+            survey, body = _create_temporary_survey(mobile_site_survey_client, "层级编辑")
+            survey_id = survey["id"]
+            school, device, position = _create_complete_hierarchy(mobile_site_survey_client, survey_id)
+
+            with allure.step("按项目关键字读取点位勘察汇总数据"):
+                summary_payload = _assert_success(
+                    mobile_site_survey_client.get(
+                        "%s/summary" % SURVEYS_URL,
+                        params={"keyword": body["project_name"]},
+                    ),
+                    "获取移动端点位勘察汇总",
+                )
+            summary = summary_payload["data"]
+            expected_summary_keys = {
+                "survey_count",
+                "school_count",
+                "device_count",
+                "position_count",
+                "photo_count",
+                "export_count",
+                "warning_count",
+                "status_counts",
+            }
+            assert expected_summary_keys <= set(summary), summary
+            assert summary["survey_count"] >= 1, summary
+            assert summary["school_count"] >= 1, summary
+            assert summary["device_count"] >= 1, summary
+            assert summary["position_count"] >= 1, summary
+            assert isinstance(summary["status_counts"], dict), summary
+
+            with allure.step("更新学校、设备和点位的现场信息"):
+                school_name = "AT-移动端更新学校-%s" % uuid4().hex[:8]
+                school_payload = _assert_success(
+                    mobile_site_survey_client.patch(
+                        "%s/%s/schools/%s" % (SURVEYS_URL, survey_id, school["id"]),
+                        json={"school_name": school_name, "remark": "AT-移动端更新学校备注", "sort_order": 9},
+                    ),
+                    "移动端更新勘察学校",
+                )
+                updated_school = school_payload["data"]
+                _assert_school_shape(updated_school, "移动端更新勘察学校")
+                assert updated_school.get("school_name") == school_name, updated_school
+                assert updated_school.get("remark") == "AT-移动端更新学校备注", updated_school
+
+                device_payload = _assert_success(
+                    mobile_site_survey_client.patch(
+                        "%s/%s/devices/%s" % (SURVEYS_URL, survey_id, device["id"]),
+                        json={
+                            "device_name": "AT-移动端更新摄像头",
+                            "quantity": 3,
+                            "unit": "台",
+                            "network": "AT-移动端更新网络",
+                            "remark": "AT-移动端更新设备备注",
+                            "sort_order": 8,
+                        },
+                    ),
+                    "移动端更新勘察设备",
+                )
+                updated_device = device_payload["data"]
+                _assert_device_shape(updated_device, "移动端更新勘察设备")
+                assert updated_device.get("device_name") == "AT-移动端更新摄像头", updated_device
+                assert updated_device.get("quantity") == 3, updated_device
+                assert updated_device.get("network") == "AT-移动端更新网络", updated_device
+
+                position_payload = _assert_success(
+                    mobile_site_survey_client.patch(
+                        "%s/%s/positions/%s" % (SURVEYS_URL, survey_id, position["id"]),
+                        json={
+                            "position_name": "AT-移动端更新点位",
+                            "position_quantity": 3,
+                            "install_description": "AT-移动端更新安装说明",
+                            "sort_order": 7,
+                        },
+                    ),
+                    "移动端更新勘察点位",
+                )
+            updated_position = position_payload["data"]
+            _assert_position_shape(updated_position, "移动端更新勘察点位")
+            assert updated_position.get("position_name") == "AT-移动端更新点位", updated_position
+            assert updated_position.get("position_quantity") == 3, updated_position
+            assert updated_position.get("install_description") == "AT-移动端更新安装说明", updated_position
+
+            with allure.step("删除学校前回查完整详情以及创建、更新日志"):
+                detail_payload = _assert_success(
+                    mobile_site_survey_client.get("%s/%s" % (SURVEYS_URL, survey_id)),
+                    "回查移动端点位勘察编辑详情",
+                )
+            detail = detail_payload["data"]
+            _assert_survey_shape(detail, "移动端点位勘察编辑详情", expected_survey_id=survey_id)
+            updated_detail_school = next((item for item in detail.get("schools") or [] if item.get("id") == school["id"]), None)
+            assert updated_detail_school is not None, detail
+            nested_device = next((item for item in updated_detail_school.get("devices") or [] if item.get("id") == device["id"]), None)
+            assert nested_device is not None, updated_detail_school
+            nested_position = next((item for item in nested_device.get("positions") or [] if item.get("id") == position["id"]), None)
+            assert nested_position is not None, nested_device
+            assert nested_position.get("position_name") == "AT-移动端更新点位", nested_position
+
+            logs_payload = _assert_success(
+                mobile_site_survey_client.get(
+                    "%s/%s/logs" % (SURVEYS_URL, survey_id),
+                    params={"page": 1, "page_size": 100},
+                ),
+                "获取移动端点位勘察操作日志",
+            )
+            logs = _assert_page_payload(logs_payload, "获取移动端点位勘察操作日志", 1, 100)
+            actions = {item.get("action") for item in logs["items"]}
+            assert {
+                "create_survey",
+                "create_school",
+                "create_device",
+                "create_position",
+                "update_school",
+                "update_device",
+                "update_position",
+            } <= actions, logs
+
+            with allure.step("删除学校并校验设备点位被级联清除"):
+                delete_payload = _assert_success(
+                    mobile_site_survey_client.delete("%s/%s/schools/%s" % (SURVEYS_URL, survey_id, school["id"])),
+                    "移动端删除勘察学校",
+                )
+            assert delete_payload["data"].get("id") == school["id"], delete_payload
+            missing_device_response = mobile_site_survey_client.patch(
+                "%s/%s/devices/%s" % (SURVEYS_URL, survey_id, device["id"]),
+                json={"device_name": "不应更新"},
+            )
+            _assert_error_code(missing_device_response, "移动端删除学校后更新设备", NOT_FOUND_CODE)
+            missing_position_response = mobile_site_survey_client.patch(
+                "%s/%s/positions/%s" % (SURVEYS_URL, survey_id, position["id"]),
+                json={"position_name": "不应更新"},
+            )
+            _assert_error_code(missing_position_response, "移动端删除学校后更新点位", NOT_FOUND_CODE)
+        finally:
+            _cleanup_survey_quietly(mobile_site_survey_client, survey_id)
+
+    @allure.feature("Word 预览与导出")
+    def test_移动端点位勘察_完整勘察预览导出记录与下载(self, mobile_site_survey_client):
+        _require_write_tests()
+        survey_id = None
+        try:
+            survey, _ = _create_temporary_survey(mobile_site_survey_client, "成功导出")
+            survey_id = survey["id"]
+            school, _, position = _create_complete_hierarchy(mobile_site_survey_client, survey_id)
+
+            with allure.step("为完整勘察点位保存真实结构的现场照片元数据"):
+                photo_payload = _assert_success(
+                    mobile_site_survey_client.post(
+                        "%s/%s/positions/%s/photos" % (SURVEYS_URL, survey_id, position["id"]),
+                        json={
+                            "original_file": _file_payload("AT-移动端导出原图.jpg", "export"),
+                            "mark_type": "none",
+                        },
+                    ),
+                    "移动端保存导出勘察照片",
+                )
+            assert isinstance(photo_payload["data"].get("id"), int), photo_payload
+
+            with allure.step("校验完整勘察后允许导出"):
+                validation_payload = _assert_success(
+                    mobile_site_survey_client.post("%s/%s/validate" % (SURVEYS_URL, survey_id)),
+                    "移动端校验可导出点位勘察",
+                )
+            validation = validation_payload["data"]
+            assert validation.get("blockers") == [], validation
+            assert validation.get("can_export") is True, validation
+
+            with allure.step("生成单校 Word 预览，不创建导出记录"):
+                preview_response = _get_binary(
+                    mobile_site_survey_client,
+                    "%s/%s/preview" % (SURVEYS_URL, survey_id),
+                    params={"export_type": "school", "school_id": school["id"]},
+                )
+            _assert_docx_response(preview_response, "移动端预览单校点位勘察 Word", "inline")
+            assert preview_response.headers.get("X-Site-Survey-Preview") == "transient", preview_response.headers
+
+            with allure.step("使用创建时的过期版本导出，应明确提示版本冲突"):
+                stale_export_response = mobile_site_survey_client.post(
+                    "%s/%s/exports" % (SURVEYS_URL, survey_id),
+                    json={"export_type": "project", "include_watermark": False, "version": survey["version"]},
+                )
+            stale_export = _assert_error_code(
+                stale_export_response,
+                "移动端使用过期版本导出项目点位勘察 Word",
+                VERSION_CONFLICT_CODE,
+            )
+            assert (stale_export.get("data") or {}).get("current_version", 0) > survey["version"], stale_export
+
+            with allure.step("刷新勘察单版本后导出无水印项目 Word 并记录下载地址"):
+                current_payload = _assert_success(
+                    mobile_site_survey_client.get("%s/%s" % (SURVEYS_URL, survey_id)),
+                    "获取移动端导出前点位勘察详情",
+                )
+            current_survey = current_payload["data"]
+            _assert_survey_shape(current_survey, "移动端导出前点位勘察详情", expected_survey_id=survey_id)
+            export_payload = _assert_success(
+                mobile_site_survey_client.post(
+                    "%s/%s/exports" % (SURVEYS_URL, survey_id),
+                    json={"export_type": "project", "include_watermark": False, "version": current_survey["version"]},
+                ),
+                "移动端导出项目点位勘察 Word",
+            )
+            export_data = export_payload["data"]
+            export = export_data.get("export") or {}
+            export_id = export.get("id")
+            assert isinstance(export_id, int) and export_id > 0, export_payload
+            assert export.get("survey_id") == survey_id, export
+            assert export.get("export_type") == "project", export
+            assert export.get("file_name", "").endswith(".docx"), export
+            assert export_data.get("include_watermark") is False, export_data
+            assert export_data.get("validation", {}).get("can_export") is True, export_data
+
+            with allure.step("回查导出记录，并从下载地址读取真实 Word 文件"):
+                exports_payload = _assert_success(
+                    mobile_site_survey_client.get("%s/%s/exports" % (SURVEYS_URL, survey_id)),
+                    "获取移动端点位勘察导出记录",
+                )
+            exports = (exports_payload["data"] or {}).get("items") or []
+            exported = next((item for item in exports if item.get("id") == export_id), None)
+            assert exported is not None, exports_payload
+            assert exported.get("download_url") == export.get("download_url"), exported
+            download_response = _get_binary(mobile_site_survey_client, exported["download_url"])
+            _assert_docx_response(download_response, "下载移动端点位勘察 Word", "attachment")
+
+            with allure.step("导出记录创建后勘察单状态更新为 exported"):
+                detail_payload = _assert_success(
+                    mobile_site_survey_client.get("%s/%s" % (SURVEYS_URL, survey_id)),
+                    "回查移动端导出后点位勘察详情",
+                )
+            detail = detail_payload["data"]
+            _assert_survey_shape(detail, "移动端导出后点位勘察详情", expected_survey_id=survey_id)
+            assert detail.get("status") == "exported", detail
+            assert detail.get("latest_export", {}).get("id") == export_id, detail
         finally:
             _cleanup_survey_quietly(mobile_site_survey_client, survey_id)
 

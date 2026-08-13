@@ -16,6 +16,7 @@ import pytest
 
 from config.project_information import ENABLE_WRITE_TESTS, MANAGEMENT_TEST_ACCOUNT, default_headers
 from utils.http_client import HttpClient
+from utils.api_test_support import assert_client_error
 
 
 LOGIN_URL = "/v1/login"
@@ -534,6 +535,53 @@ class Test客户管理业务链路:
             assert {"create", "delete", "restore"} <= operation_types, log_data
         finally:
             _cleanup_temporary_customer(customer_client, customer_id)
+
+    @allure.feature("删除恢复")
+    def test_客户软删除_恢复后再次可见(self, customer_client):
+        """覆盖软删除、详情不可见、恢复和最终清理。"""
+        _require_write_tests()
+        customer_id = None
+        deleted = False
+        try:
+            customer = _create_temporary_customer(customer_client)
+            customer_id = customer["id"]
+
+            with allure.step("软删除临时客户"):
+                _assert_success(customer_client.delete("%s/%s" % (CUSTOMERS_URL, customer_id)), "删除 AT 客户")
+                deleted = True
+
+            with allure.step("恢复客户并验证详情重新可见"):
+                _assert_success(customer_client.post("%s/%s/restore" % (CUSTOMERS_URL, customer_id)), "恢复 AT 客户")
+                deleted = False
+                detail_payload = _assert_success(
+                    customer_client.get("%s/%s" % (CUSTOMERS_URL, customer_id)),
+                    "恢复后查询 AT 客户详情",
+                )
+            assert detail_payload["data"].get("is_deleted") is False, detail_payload
+        finally:
+            if customer_id and not deleted:
+                _cleanup_temporary_customer(customer_client, customer_id)
+
+    @allure.feature("搜索异常")
+    def test_客户搜索_当前服务端变量初始化错误返回精确契约(self, customer_client):
+        """保留搜索接口的回归证据，避免宽松断言掩盖服务端 6001。"""
+        response = customer_client.get("%s/search" % CUSTOMERS_URL, params={"name": "AT-search-contract"})
+        assert_client_error(
+            response,
+            "客户搜索接口未初始化查询对象",
+            code=6001,
+            msg="服务器内部错误: local variable 'query' referenced before assignment",
+            data_type=dict,
+        )
+
+    @allure.feature("已删除列表异常")
+    def test_已删除客户列表_当前被详情动态路由抢占(self, customer_client):
+        """精确记录 /customers/deleted 被 /customers/{customer_id} 抢占的问题。"""
+        response = customer_client.get("%s/deleted" % CUSTOMERS_URL, params={"page": 1, "page_size": 10})
+        payload = _parse_json(response, "已删除客户列表路由冲突")
+        assert payload.get("code") == INVALID_PARAMS_CODE, payload
+        locations = {tuple(item.get("loc") or ()) for item in payload.get("data") or [] if isinstance(item, dict)}
+        assert ("path", "customer_id") in locations, payload
 
     @allure.feature("名称唯一性")
     def test_客户名称_正常客户名称不可重复(self, customer_client):

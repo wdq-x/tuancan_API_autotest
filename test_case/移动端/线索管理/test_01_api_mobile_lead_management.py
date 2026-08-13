@@ -8,8 +8,8 @@
 - ``channel_option_request.dart``: 移动端来源渠道选项。
 - ``customer_request.dart``: 线索转客户。
 
-写操作使用 ``AT-移动端线索-`` 前缀临时数据，并在 finally 中删除。创建线索时
-优先使用移动端渠道选项接口返回的有效渠道，不创建或修改环境原有渠道。
+写操作使用 ``AT-`` 前缀临时数据，并在 finally 中删除。模块会创建独立的合作中
+来源渠道，避免依赖或修改环境原有渠道。
 """
 from datetime import date, timedelta
 from uuid import uuid4
@@ -22,6 +22,8 @@ from config.project_information import (
     MOBILE_TEST_ACCOUNT,
     default_headers,
 )
+from utils.api_test_data import create_active_channel, delete_channel
+from utils.api_test_support import management_client
 from utils.http_client import HttpClient
 
 
@@ -163,17 +165,17 @@ def mobile_lead_client():
     client.headers.pop("Authorization", None)
 
 
-def _get_active_channel(client):
-    payload = _assert_success(
-        client.get(CHANNEL_OPTIONS_URL, params={"status": "active", "limit": 500}),
-        "获取移动端来源渠道选项",
-    )
-    channels = payload["data"]
-    assert isinstance(channels, list), "移动端渠道选项 data 应为数组：%s" % payload
-    for channel in channels:
-        if isinstance(channel, dict) and isinstance(channel.get("id"), int) and channel["id"] > 0:
-            return channel
-    pytest.skip("当前移动端账号没有可用于创建线索的合作中来源渠道")
+@pytest.fixture(scope="module")
+def mobile_lead_active_channel():
+    """Provide one isolated, active source channel for all mobile lead write flows."""
+    _require_write_tests()
+    client = management_client()
+    channel = create_active_channel(client, "AT-mobile-lead-channel")
+    try:
+        yield channel
+    finally:
+        delete_channel(client, channel["id"])
+        client.headers.pop("Authorization", None)
 
 
 def _create_temporary_lead(client, channel, **overrides):
@@ -305,11 +307,11 @@ class Test移动端线索管理业务链路:
     """覆盖 Flutter 移动端线索新增、编辑、详情、状态和删除流程。"""
 
     @allure.feature("线索生命周期")
-    def test_移动端线索_创建筛选编辑详情状态与删除(self, mobile_lead_client):
+    def test_移动端线索_创建筛选编辑详情状态与删除(self, mobile_lead_client, mobile_lead_active_channel):
         _require_write_tests()
         lead_id = None
         try:
-            channel = _get_active_channel(mobile_lead_client)
+            channel = mobile_lead_active_channel
             lead = _create_temporary_lead(mobile_lead_client, channel)
             lead_id = lead["id"]
 
@@ -434,11 +436,11 @@ class Test移动端线索管理业务链路:
             _cleanup_temporary_lead(mobile_lead_client, lead_id)
 
     @allure.feature("状态管理")
-    def test_移动端线索_全部状态Tab与作废原因约束(self, mobile_lead_client):
+    def test_移动端线索_全部状态Tab与作废原因约束(self, mobile_lead_client, mobile_lead_active_channel):
         _require_write_tests()
         lead_id = None
         try:
-            channel = _get_active_channel(mobile_lead_client)
+            channel = mobile_lead_active_channel
             lead = _create_temporary_lead(mobile_lead_client, channel)
             lead_id = lead["id"]
 
@@ -506,12 +508,12 @@ class Test移动端线索管理业务链路:
             _cleanup_temporary_lead(mobile_lead_client, lead_id)
 
     @allure.feature("详情展示数据")
-    def test_移动端线索详情_跟进记录附件与操作记录(self, mobile_lead_client):
+    def test_移动端线索详情_跟进记录附件与操作记录(self, mobile_lead_client, mobile_lead_active_channel):
         _require_write_tests()
         lead_id = None
         follow_up_id = None
         try:
-            channel = _get_active_channel(mobile_lead_client)
+            channel = mobile_lead_active_channel
             attachment = {
                 "name": "AT-移动端线索附件.txt",
                 "url": "https://example.com/at-mobile-lead-attachment.txt",
@@ -580,11 +582,11 @@ class Test移动端线索管理业务链路:
             _cleanup_temporary_lead(mobile_lead_client, lead_id)
 
     @allure.feature("线索转客户")
-    def test_移动端线索_转客户后继承渠道并联动清理(self, mobile_lead_client):
+    def test_移动端线索_转客户后继承渠道并联动清理(self, mobile_lead_client, mobile_lead_active_channel):
         _require_write_tests()
         lead_id = None
         try:
-            channel = _get_active_channel(mobile_lead_client)
+            channel = mobile_lead_active_channel
             lead = _create_temporary_lead(mobile_lead_client, channel)
             lead_id = lead["id"]
             customer_name = "AT-移动端转客户-%s" % uuid4().hex[:10]

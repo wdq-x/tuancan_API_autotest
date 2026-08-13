@@ -19,6 +19,7 @@ SALES_PRODUCTS_URL = "/v1/sales/products"
 SALES_PRODUCT_OPTIONS_URL = "/v1/sales/products/options"
 SALES_PRODUCT_NEXT_CODE_URL = "/v1/sales/products/next-code"
 SALES_PRODUCT_IMPORT_URL = "/v1/sales-products/import"
+SALES_PRODUCTS_COMPAT_URL = "/v1/sales-products"
 
 SUCCESS_CODE = 20000
 INVALID_PARAMS_CODE = 4001
@@ -426,5 +427,56 @@ class Test销售商品业务链路:
                     json=_product_body(name=name, spec_name=spec_name),
                 )
             _assert_error_code(duplicate_response, "创建名称规格重复的销售商品", NAME_ALREADY_EXISTS_CODE)
+        finally:
+            _cleanup_temporary_product(sales_product_client, product_id)
+
+    @allure.feature("兼容路径")
+    def test_销售商品兼容路径_详情列表恢复与导入响应契约(self, sales_product_client):
+        """覆盖 /sales-products 的当前兼容语义，不将 restore 误认为软删除恢复。"""
+        _require_write_tests()
+        product_id = None
+        try:
+            product = _create_temporary_product(sales_product_client)
+            product_id = product["id"]
+
+            with allure.step("主路径和兼容路径读取同一商品详情"):
+                primary_payload = _assert_success(
+                    sales_product_client.get("%s/%s" % (SALES_PRODUCTS_URL, product_id)),
+                    "主路径读取 AT 商品",
+                )
+                compat_payload = _assert_success(
+                    sales_product_client.get("%s/%s" % (SALES_PRODUCTS_COMPAT_URL, product_id)),
+                    "兼容路径读取 AT 商品",
+                )
+            primary = primary_payload["data"]
+            compat = compat_payload["data"]
+            for field in ("id", "name", "product_code", "category", "status", "default_price"):
+                assert compat.get(field) == primary.get(field), "兼容路径字段 %s 与主路径不一致：%s / %s" % (field, primary, compat)
+
+            with allure.step("停用后调用兼容 restore，验证其实际为启用别名"):
+                disabled_payload = _assert_success(
+                    sales_product_client.post("%s/%s/disable" % (SALES_PRODUCTS_URL, product_id)),
+                    "停用 AT 商品",
+                )
+                restored_payload = _assert_success(
+                    sales_product_client.post("%s/%s/restore" % (SALES_PRODUCTS_COMPAT_URL, product_id)),
+                    "兼容 restore AT 商品",
+                )
+            assert disabled_payload["data"].get("status") == "disabled", disabled_payload
+            assert restored_payload["data"].get("status") == "enabled", restored_payload
+
+            batch_id = "AT-import-batch-contract"
+            with allure.step("查询已废弃导入批次的空错误列表"):
+                import_errors_payload = _assert_success(
+                    sales_product_client.get("%s/import/errors/%s" % (SALES_PRODUCTS_COMPAT_URL, batch_id)),
+                    "查询兼容商品导入错误",
+                )
+            errors_data = import_errors_payload.get("data") or {}
+            assert errors_data == {"batch_id": batch_id, "errors": [], "count": 0, "deprecated": True}, import_errors_payload
+
+            with allure.step("调用已废弃导入重试入口"):
+                retry_response = sales_product_client.post("%s/import/retry" % SALES_PRODUCTS_COMPAT_URL, json={})
+            retry_payload = _assert_error_code(retry_response, "重试兼容商品导入", OPERATION_NOT_ALLOWED_CODE)
+            assert retry_payload.get("msg") == "本期销售商品不支持导入重试", retry_payload
         finally:
             _cleanup_temporary_product(sales_product_client, product_id)

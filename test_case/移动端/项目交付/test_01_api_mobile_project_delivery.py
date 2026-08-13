@@ -25,13 +25,18 @@ from utils.http_client import NO_PROXIES, HttpClient
 LOGIN_URL = "/v1/login"
 PROJECTS_URL = "/v1/project-delivery/projects"
 TODOS_URL = "/v1/project-delivery/todos"
-DEMAND_COLLABORATORS_URL = "/v1/project-delivery/demand-collaborators"
+DASHBOARD_SUMMARY_URL = "/v1/project-delivery/dashboard/summary"
+DASHBOARD_RISKS_URL = "/v1/project-delivery/dashboard/risks"
+MEMBER_CANDIDATES_URL = "/v1/project-delivery/member-candidates"
+PERMISSION_MATRIX_URL = "/v1/project-delivery/permissions/matrix"
 
 SUCCESS_CODE = 20000
 INVALID_PARAMS_CODE = 4001
+PARAM_ERROR_CODE = 4100
 FORBIDDEN_CODE = 4030
 TOKEN_INVALID_CODE = 5104
 STATE_CONFLICT_CODE = 409010
+GATE_BLOCKED_CODE = 409020
 NOT_FOUND_CODE = 4040
 
 PROJECT_TODO_TYPES = {"node", "confirm", "material", "rectification", "demand"}
@@ -115,6 +120,12 @@ def _assert_error_code(response, action, expected_code, expected_http_status=200
     )
     payload = _parse_json(response, action)
     assert payload.get("code") == expected_code, "%s 错误码不正确：%s" % (action, payload)
+    return payload
+
+
+def _assert_error(response, action, expected_code, expected_message, expected_http_status=200):
+    payload = _assert_error_code(response, action, expected_code, expected_http_status)
+    assert payload.get("msg") == expected_message, "%s 错误信息不正确：%s" % (action, payload)
     return payload
 
 
@@ -273,22 +284,6 @@ def _get_nodes(client, project_id):
     return data["items"]
 
 
-def _get_current_user_demand_collaborator(client):
-    """模拟需求登记页选择当前登录账号为协同人，保证新建待办可被当前账号回查。"""
-    payload = _assert_success(
-        client.get(
-            DEMAND_COLLABORATORS_URL,
-            params={"keyword": client.mobile_user_keyword, "page": 1, "page_size": 100},
-        ),
-        "获取移动端需求协同人列表",
-    )
-    data = _assert_page_payload(payload, "获取移动端需求协同人列表", 1, 100)
-    current_user_id = getattr(client, "mobile_user_id", None)
-    collaborator = next((item for item in data["items"] if item.get("id") == current_user_id), None)
-    assert collaborator is not None, "需求协同人列表未包含当前测试账号 %s：%s" % (current_user_id, data)
-    return current_user_id
-
-
 def _get_node_detail(client, project_id, node_id):
     payload = _assert_success(
         client.get("%s/%s/nodes/%s" % (PROJECTS_URL, project_id, node_id)),
@@ -325,6 +320,25 @@ def _find_project_todo(client, project_id, todo_type):
     matched = next((todo for todo in data["items"] if todo.get("project_id") == project_id), None)
     assert matched is not None, "移动端%s待办列表未包含临时项目 %s：%s" % (todo_type, project_id, data)
     return matched
+
+
+def _get_member_candidate(client):
+    """选择非当前登录用户的真实候选成员，不创建或修改系统用户。"""
+    payload = _assert_success(
+        client.get(MEMBER_CANDIDATES_URL, params={"page": 1, "page_size": 100}),
+        "获取移动端项目成员候选人",
+    )
+    data = _assert_page_payload(payload, "获取移动端项目成员候选人", 1, 100)
+    current_user_id = getattr(client, "mobile_user_id", None)
+    candidate = next(
+        (item for item in data["items"] if item.get("id") != current_user_id),
+        None,
+    )
+    if candidate is None:
+        pytest.skip("当前环境没有可用于项目成员 CRUD 的其他活跃用户")
+    assert isinstance(candidate.get("id"), int) and candidate["id"] > 0, candidate
+    assert isinstance(candidate.get("roles"), list), candidate
+    return candidate
 
 
 def _upload_mobile_delivery_file(client, file_name, folder="project_delivery_material"):
@@ -478,6 +492,76 @@ class Test移动端项目交付待办:
             missing_response = mobile_delivery_client.get("%s/%s" % (PROJECTS_URL, 2147483647))
         _assert_error_code(missing_response, "移动端查询不存在项目", NOT_FOUND_CODE)
 
+    @allure.feature("交付看板与权限")
+    def test_移动端项目交付_看板风险成员候选人与权限矩阵查询(self, mobile_delivery_client):
+        """只读覆盖交付工作台加载所依赖的管理接口。"""
+        with allure.step("加载项目交付看板统计"):
+            summary_payload = _assert_success(
+                mobile_delivery_client.get(DASHBOARD_SUMMARY_URL),
+                "获取移动端项目交付看板统计",
+            )
+        summary = summary_payload["data"]
+        assert isinstance(summary, dict), summary
+        metrics = summary.get("metrics")
+        assert isinstance(metrics, dict), summary
+        expected_metric_keys = {
+            "total_projects",
+            "delivering",
+            "pending_acceptance",
+            "rectifying",
+            "delivered",
+            "material_complete_rate",
+        }
+        assert expected_metric_keys <= set(metrics), summary
+        assert all(isinstance(metrics[key], (int, float)) for key in expected_metric_keys), summary
+        assert 0 <= metrics["material_complete_rate"] <= 100, summary
+        assert isinstance(summary.get("status_distribution"), list), summary
+        assert isinstance(summary.get("phase_distribution"), list), summary
+        assert isinstance(summary.get("risk_distribution"), list), summary
+        trend = summary.get("node_due_trend")
+        assert isinstance(trend, list) and len(trend) == 7, summary
+        assert all({"date", "label", "count"} <= set(item) for item in trend), trend
+
+        with allure.step("按高风险筛选加载项目交付风险列表"):
+            risks_payload = _assert_success(
+                mobile_delivery_client.get(
+                    DASHBOARD_RISKS_URL,
+                    params={"filter_type": "high_risk", "page": 1, "page_size": 20},
+                ),
+                "获取移动端项目交付风险列表",
+            )
+        risks = _assert_page_payload(risks_payload, "获取移动端项目交付风险列表", 1, 20)
+        for project in risks["items"]:
+            _assert_project_shape(project, "移动端项目交付风险项目")
+            assert "primary_risk" in project and "primary_risk_text" in project, project
+
+        with allure.step("加载项目成员选择器候选人"):
+            candidates_payload = _assert_success(
+                mobile_delivery_client.get(MEMBER_CANDIDATES_URL, params={"page": 1, "page_size": 20}),
+                "获取移动端项目成员候选人",
+            )
+        candidates = _assert_page_payload(candidates_payload, "获取移动端项目成员候选人", 1, 20)
+        for candidate in candidates["items"]:
+            assert isinstance(candidate.get("id"), int) and candidate["id"] > 0, candidate
+            assert isinstance(candidate.get("roles"), list), candidate
+
+        with allure.step("读取项目交付角色权限矩阵"):
+            matrix_payload = _assert_success(
+                mobile_delivery_client.get(PERMISSION_MATRIX_URL),
+                "获取移动端项目交付权限矩阵",
+            )
+        matrix = matrix_payload["data"]
+        assert isinstance(matrix, dict), matrix
+        roles = matrix.get("roles")
+        permissions = matrix.get("permissions")
+        assignments = matrix.get("matrix")
+        assert isinstance(roles, list) and roles, matrix
+        assert isinstance(permissions, list) and permissions, matrix
+        assert isinstance(assignments, dict), matrix
+        role_ids = {str(item["id"]) for item in roles}
+        assert role_ids <= set(assignments), matrix
+        assert all(str(item.get("code") or "").startswith(("delivery:", "after_sales:", "menu:")) for item in permissions), matrix
+
 
 @allure.parent_suite("接口自动化")
 @allure.suite("移动端-项目交付")
@@ -557,6 +641,481 @@ class Test移动端项目交付处理链路:
                 todo = _find_project_todo(mobile_delivery_client, project_id, "node")
             assert todo.get("source_type") == "node", todo
             assert todo.get("source_id") == current_node["id"], todo
+
+            _close_and_delete_project(mobile_delivery_client, project_id)
+            project_id = None
+        finally:
+            _cleanup_project_quietly(mobile_delivery_client, project_id)
+
+    @allure.feature("项目成员与日志")
+    def test_移动端项目交付_节点编辑项目成员管理和日志回查(self, mobile_delivery_client):
+        _require_write_tests()
+        project_id = None
+        try:
+            project = _create_temporary_project(mobile_delivery_client, "成员与日志")
+            project_id = project["id"]
+            node = next(item for item in _get_nodes(mobile_delivery_client, project_id) if item["id"] == project["current_node_id"])
+            candidate = _get_member_candidate(mobile_delivery_client)
+
+            with allure.step("编辑当前交付节点的负责人、截止时间和备注"):
+                due_at = (datetime.now() + timedelta(days=3)).replace(microsecond=0).isoformat()
+                node_update_payload = _assert_success(
+                    mobile_delivery_client.patch(
+                        "%s/%s/nodes/%s" % (PROJECTS_URL, project_id, node["id"]),
+                        json={
+                            "owner_id": mobile_delivery_client.mobile_user_id,
+                            "due_at": due_at,
+                            "remark": "AT-移动端项目交付节点编辑",
+                        },
+                    ),
+                    "移动端编辑项目交付节点",
+                )
+            updated_node = node_update_payload["data"]
+            _assert_node_shape(updated_node, "移动端编辑项目交付节点")
+            assert updated_node.get("owner_id") == mobile_delivery_client.mobile_user_id, updated_node
+            assert updated_node.get("due_at", "").startswith(due_at[:16]), updated_node
+            assert updated_node.get("version") == node["version"] + 1, updated_node
+
+            with allure.step("将现有候选人加入临时项目"):
+                add_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/members" % (PROJECTS_URL, project_id),
+                        json={
+                            "user_id": candidate["id"],
+                            "project_role": "member",
+                            "node_scope": "当前节点",
+                            "material_permission": "read",
+                        },
+                    ),
+                    "移动端添加项目成员",
+                )
+            member_id = (add_payload.get("data") or {}).get("id")
+            assert isinstance(member_id, int) and member_id > 0, add_payload
+
+            with allure.step("更新临时项目成员职责和资料权限"):
+                update_member_payload = _assert_success(
+                    mobile_delivery_client.patch(
+                        "%s/%s/members/%s" % (PROJECTS_URL, project_id, member_id),
+                        json={
+                            "project_role": "reviewer",
+                            "node_scope": "全部节点",
+                            "material_permission": "write",
+                            "is_active": True,
+                        },
+                    ),
+                    "移动端更新项目成员",
+                )
+            assert (update_member_payload.get("data") or {}).get("id") == member_id, update_member_payload
+
+            with allure.step("回查成员列表中的更新结果"):
+                members_payload = _assert_success(
+                    mobile_delivery_client.get("%s/%s/members" % (PROJECTS_URL, project_id)),
+                    "获取移动端项目成员列表",
+                )
+            members = (members_payload["data"] or {}).get("items") or []
+            member = next((item for item in members if item.get("id") == member_id), None)
+            assert member is not None, members_payload
+            assert member.get("user_id") == candidate["id"], member
+            assert member.get("project_role") == "reviewer", member
+            assert member.get("node_scope") == "全部节点", member
+            assert member.get("material_permission") == "write", member
+            assert member.get("is_active") is True, member
+
+            with allure.step("从临时项目移除无待办成员"):
+                remove_payload = _assert_success(
+                    mobile_delivery_client.delete("%s/%s/members/%s" % (PROJECTS_URL, project_id, member_id)),
+                    "移动端移除项目成员",
+                )
+            assert remove_payload.get("data") in (None, {}), remove_payload
+
+            with allure.step("回查节点编辑和成员操作日志"):
+                logs_payload = _assert_success(
+                    mobile_delivery_client.get(
+                        "%s/%s/logs" % (PROJECTS_URL, project_id),
+                        params={"page": 1, "page_size": 50},
+                    ),
+                    "获取移动端项目操作日志",
+                )
+            logs = _assert_page_payload(logs_payload, "获取移动端项目操作日志", 1, 50)
+            actions = {item.get("action") for item in logs["items"]}
+            assert {"update_node", "add_member", "update_member", "remove_member"} <= actions, logs
+            assert all(item.get("project_id") == project_id for item in logs["items"]), logs
+
+            _close_and_delete_project(mobile_delivery_client, project_id)
+            project_id = None
+        finally:
+            _cleanup_project_quietly(mobile_delivery_client, project_id)
+
+    @allure.feature("资料门禁与验收")
+    def test_移动端项目交付_资料门禁提醒确认和验收整改审核(self, mobile_delivery_client):
+        _require_write_tests()
+        project_id = None
+        material_id = None
+        version_id = None
+        try:
+            project = _create_temporary_project(mobile_delivery_client, "门禁与验收")
+            project_id = project["id"]
+            node = next(item for item in _get_nodes(mobile_delivery_client, project_id) if item["id"] == project["current_node_id"])
+            material_name = "AT-移动端验收资料-%s" % uuid4().hex[:8]
+
+            with allure.step("创建验收门禁所需的临时资料"):
+                material_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/materials" % (PROJECTS_URL, project_id),
+                        json={
+                            "node_id": node["id"],
+                            "material_name": material_name,
+                            "material_type": "document",
+                            "is_required": True,
+                            "gate_action": "acceptance_start",
+                            "owner_id": mobile_delivery_client.mobile_user_id,
+                        },
+                    ),
+                    "创建移动端验收门禁资料",
+                )
+            material = material_payload["data"]
+            material_id = material.get("id")
+            assert isinstance(material_id, int) and material_id > 0, material_payload
+            assert material.get("status") == "missing", material
+
+            with allure.step("资料未上传时门禁检查返回具体缺失资料"):
+                gate_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/materials/gate-check" % (PROJECTS_URL, project_id),
+                        json={"gate_action": "acceptance_start", "node_id": node["id"]},
+                    ),
+                    "检查移动端验收资料门禁",
+                )
+            gate = gate_payload["data"]
+            assert gate.get("passed") is False, gate
+            assert any(item.get("material_id") == material_id for item in gate.get("missing_items") or []), gate
+
+            with allure.step("资料门禁未通过时不允许创建通过状态的验收单"):
+                blocked_response = mobile_delivery_client.post(
+                    "%s/%s/acceptances" % (PROJECTS_URL, project_id),
+                    json={"stage": "initial", "status": "passed", "summary": "不应绕过资料门禁"},
+                )
+            _assert_error(blocked_response, "资料门禁阻断验收单", GATE_BLOCKED_CODE, "资料门禁未通过")
+
+            with allure.step("对缺失资料发送提醒并在待办列表回查"):
+                reminder_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/materials/remind" % (PROJECTS_URL, project_id),
+                        json={"material_id": material_id},
+                    ),
+                    "移动端提醒补齐资料",
+                )
+            assert reminder_payload.get("data") in (None, {}), reminder_payload
+            material_todo = _find_project_todo(mobile_delivery_client, project_id, "material")
+            assert material_todo.get("source_id") == material_id, material_todo
+
+            file_name = "AT-移动端验收资料-%s.txt" % uuid4().hex[:8]
+            with allure.step("上传、确认资料后复核门禁"):
+                uploaded_file = _upload_mobile_delivery_file(mobile_delivery_client, file_name)
+                _create_material_version(
+                    mobile_delivery_client,
+                    project_id,
+                    material_id,
+                    file_name,
+                    "移动端验收资料上传",
+                    uploaded_file=uploaded_file,
+                )
+                versions_payload = _assert_success(
+                    mobile_delivery_client.get("%s/%s/materials/%s/versions" % (PROJECTS_URL, project_id, material_id)),
+                    "获取移动端验收资料版本",
+                )
+            versions = (versions_payload["data"] or {}).get("items") or []
+            version = next((item for item in versions if item.get("file_name") == file_name), None)
+            assert version is not None, versions_payload
+            version_id = version.get("id")
+            assert isinstance(version_id, int) and version_id > 0, version
+
+            confirm_material_payload = _assert_success(
+                mobile_delivery_client.post("%s/%s/materials/%s/confirm" % (PROJECTS_URL, project_id, material_id)),
+                "移动端确认验收资料",
+            )
+            assert confirm_material_payload["data"].get("status") == "confirmed", confirm_material_payload
+            passed_gate_payload = _assert_success(
+                mobile_delivery_client.post(
+                    "%s/%s/materials/gate-check" % (PROJECTS_URL, project_id),
+                    json={"gate_action": "acceptance_start", "node_id": node["id"]},
+                ),
+                "复核移动端验收资料门禁",
+            )
+            assert passed_gate_payload["data"].get("passed") is True, passed_gate_payload
+
+            with allure.step("验收不通过创建整改项，整改提交后审核通过"):
+                acceptance_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/acceptances" % (PROJECTS_URL, project_id),
+                        json={
+                            "stage": "initial",
+                            "status": "failed",
+                            "acceptance_user_name": "AT-移动端验收人",
+                            "summary": "AT-移动端验收不通过，创建整改项",
+                            "rectifications": [{
+                                "title": "AT-移动端验收整改-%s" % uuid4().hex[:8],
+                                "description": "自动化验收整改问题描述",
+                                "severity": "normal",
+                                "owner_id": mobile_delivery_client.mobile_user_id,
+                                "due_at": (datetime.now() + timedelta(days=2)).replace(microsecond=0).isoformat(),
+                            }],
+                        },
+                    ),
+                    "移动端创建不通过验收单",
+                )
+            acceptance = acceptance_payload["data"]
+            assert acceptance.get("status") == "failed", acceptance
+            acceptances_payload = _assert_success(
+                mobile_delivery_client.get("%s/%s/acceptances" % (PROJECTS_URL, project_id)),
+                "获取移动端验收单列表",
+            )
+            assert any(item.get("id") == acceptance.get("id") for item in (acceptances_payload["data"] or {}).get("items") or []), acceptances_payload
+            rectifications_payload = _assert_success(
+                mobile_delivery_client.get("%s/%s/rectifications" % (PROJECTS_URL, project_id)),
+                "获取移动端验收整改列表",
+            )
+            rectifications = (rectifications_payload["data"] or {}).get("items") or []
+            rectification = next((item for item in rectifications if item.get("acceptance_id") == acceptance.get("id")), None)
+            assert rectification is not None, rectifications_payload
+
+            submitted_payload = _assert_success(
+                mobile_delivery_client.post(
+                    "%s/%s/rectifications/%s/submit" % (PROJECTS_URL, project_id, rectification["id"]),
+                    json={"result_desc": "AT-移动端验收整改已完成", "attachments": [], **_mobile_request_meta()},
+                ),
+                "移动端提交验收整改",
+            )
+            assert submitted_payload["data"].get("status") == "passed", submitted_payload
+            reviewed_payload = _assert_success(
+                mobile_delivery_client.post(
+                    "%s/%s/rectifications/%s/review" % (PROJECTS_URL, project_id, rectification["id"]),
+                    json={"passed": True, "review_opinion": "AT-移动端验收整改审核通过"},
+                ),
+                "移动端审核验收整改",
+            )
+            reviewed = reviewed_payload["data"]
+            assert reviewed.get("status") == "passed", reviewed
+            assert reviewed.get("review_opinion") == "AT-移动端验收整改审核通过", reviewed
+
+            with allure.step("删除资料版本，清理本用例上传的临时文件"):
+                delete_version_payload = _assert_success(
+                    mobile_delivery_client.delete(
+                        "%s/%s/materials/%s/versions/%s" % (PROJECTS_URL, project_id, material_id, version_id)
+                    ),
+                    "删除移动端验收资料版本",
+                )
+            assert delete_version_payload["data"].get("id") == material_id, delete_version_payload
+            version_id = None
+
+            _close_and_delete_project(mobile_delivery_client, project_id)
+            project_id = None
+        finally:
+            _cleanup_project_quietly(mobile_delivery_client, project_id)
+
+    @allure.feature("节点附件与文件列表")
+    def test_移动端项目交付_节点附件资料槽位版本和文件列表(self, mobile_delivery_client):
+        _require_write_tests()
+        project_id = None
+        try:
+            project = _create_temporary_project(mobile_delivery_client, "节点附件")
+            project_id = project["id"]
+            node = next(item for item in _get_nodes(mobile_delivery_client, project_id) if item["id"] == project["current_node_id"])
+
+            with allure.step("为当前节点创建幂等的附件资料槽位"):
+                first_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/nodes/%s/attachment-material" % (PROJECTS_URL, project_id, node["id"])
+                    ),
+                    "移动端创建节点附件资料槽位",
+                )
+                second_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/nodes/%s/attachment-material" % (PROJECTS_URL, project_id, node["id"])
+                    ),
+                    "移动端重复创建节点附件资料槽位",
+                )
+            attachment_material = first_payload["data"]
+            assert isinstance(attachment_material.get("id"), int) and attachment_material["id"] > 0, first_payload
+            assert attachment_material.get("node_id") == node["id"], attachment_material
+            assert attachment_material.get("material_name") == "节点附件", attachment_material
+            assert attachment_material.get("material_type") == "attachment", attachment_material
+            assert second_payload["data"].get("id") == attachment_material["id"], second_payload
+
+            with allure.step("按节点加载资料列表，附件槽位应可见"):
+                materials_payload = _assert_success(
+                    mobile_delivery_client.get(
+                        "%s/%s/materials" % (PROJECTS_URL, project_id),
+                        params={"node_id": node["id"]},
+                    ),
+                    "获取移动端节点资料列表",
+                )
+            materials = (materials_payload["data"] or {}).get("items") or []
+            material = next((item for item in materials if item.get("id") == attachment_material["id"]), None)
+            assert material is not None, materials_payload
+            assert material.get("current_version_id") is None, material
+
+            file_name = "AT-移动端节点附件-%s.txt" % uuid4().hex[:8]
+            with allure.step("上传节点附件版本并按文件列表回查"):
+                uploaded_file = _upload_mobile_delivery_file(mobile_delivery_client, file_name, folder="project_delivery_attachment")
+                _create_material_version(
+                    mobile_delivery_client,
+                    project_id,
+                    attachment_material["id"],
+                    file_name,
+                    "AT-移动端节点附件版本",
+                    uploaded_file=uploaded_file,
+                )
+                files_payload = _assert_success(
+                    mobile_delivery_client.get(
+                        "%s/%s/files" % (PROJECTS_URL, project_id),
+                        params={"node_id": node["id"], "include_history": True},
+                    ),
+                    "获取移动端节点附件文件列表",
+                )
+            files = files_payload["data"]
+            assert files.get("node_id") == node["id"], files
+            assert files.get("include_history") is True, files
+            assert isinstance(files.get("items"), list), files
+            assert files.get("total_files", 0) >= 1, files
+            matching_group = next(
+                (
+                    group
+                    for group in files["items"]
+                    if any(item.get("file_name") == file_name for item in group.get("files") or [])
+                ),
+                None,
+            )
+            assert matching_group is not None, files
+            assert matching_group.get("node_id") == node["id"], matching_group
+
+            with allure.step("删除节点附件版本，清理本次上传文件"):
+                versions_payload = _assert_success(
+                    mobile_delivery_client.get(
+                        "%s/%s/materials/%s/versions" % (
+                            PROJECTS_URL,
+                            project_id,
+                            attachment_material["id"],
+                        )
+                    ),
+                    "获取移动端节点附件版本",
+                )
+            versions = (versions_payload["data"] or {}).get("items") or []
+            version = next((item for item in versions if item.get("file_name") == file_name), None)
+            assert version is not None, versions_payload
+            delete_payload = _assert_success(
+                mobile_delivery_client.delete(
+                    "%s/%s/materials/%s/versions/%s" % (
+                        PROJECTS_URL,
+                        project_id,
+                        attachment_material["id"],
+                        version["id"],
+                    )
+                ),
+                "删除移动端节点附件版本",
+            )
+            assert delete_payload["data"].get("status") == "missing", delete_payload
+
+            _close_and_delete_project(mobile_delivery_client, project_id)
+            project_id = None
+        finally:
+            _cleanup_project_quietly(mobile_delivery_client, project_id)
+
+    @allure.feature("需求确认与待办约束")
+    def test_移动端项目交付_需求创建确认删除与待办禁止直接关闭(self, mobile_delivery_client):
+        """使用当前登录用户作为协同人，不依赖已移除的需求协同人查询用例。"""
+        _require_write_tests()
+        project_id = None
+        try:
+            project = _create_temporary_project(mobile_delivery_client, "需求确认")
+            project_id = project["id"]
+            node = next(item for item in _get_nodes(mobile_delivery_client, project_id) if item["id"] == project["current_node_id"])
+            title = "AT-移动端现场需求-%s" % uuid4().hex[:8]
+
+            with allure.step("创建关联当前节点的移动端需求"):
+                create_payload = _assert_success(
+                    mobile_delivery_client.post(
+                        "%s/%s/demands" % (PROJECTS_URL, project_id),
+                        json={
+                            "source_node_id": node["id"],
+                            "collaborator_id": mobile_delivery_client.mobile_user_id,
+                            "title": title,
+                            "description": "AT-移动端现场登记需求描述不少于五个字符",
+                            "source_scene": "现场沟通",
+                            "proposer_name": "AT-移动端需求提交人",
+                            "impact_scope": "自动化临时项目范围",
+                            "expected_date": (date.today() + timedelta(days=5)).isoformat(),
+                        },
+                    ),
+                    "移动端创建项目需求",
+                )
+            demand = create_payload["data"]
+            demand_id = demand.get("id")
+            assert isinstance(demand_id, int) and demand_id > 0, create_payload
+            assert demand.get("project_id") == project_id, demand
+            assert demand.get("source_node_id") == node["id"], demand
+            assert demand.get("collaborator_id") == mobile_delivery_client.mobile_user_id, demand
+            assert demand.get("status") == "pending_confirm", demand
+
+            with allure.step("待办列表显示需求确认任务，并保留聚合需求待办标识"):
+                demand_todo = _find_project_todo(mobile_delivery_client, project_id, "demand")
+            assert demand_todo.get("source_id") == demand_id, demand_todo
+            assert demand_todo.get("id") == "demand:%s" % demand_id, demand_todo
+
+            # 需求待办是聚合投影，id 为 demand:<source_id>，不能作为整型 path 参数传给
+            # 关闭接口。使用项目创建时产生的真实节点待办验证业务层禁止直接关闭的契约。
+            node_todo = _find_project_todo(mobile_delivery_client, project_id, "node")
+            assert isinstance(node_todo.get("id"), int), node_todo
+            direct_close_response = mobile_delivery_client.post(
+                "%s/%s/close" % (TODOS_URL, node_todo["id"]),
+                json={"remark": "不应直接关闭节点待办"},
+            )
+            _assert_error(
+                direct_close_response,
+                "移动端直接关闭节点待办",
+                PARAM_ERROR_CODE,
+                "待办需进入对应业务处理，不能直接关闭",
+            )
+
+            with allure.step("从项目需求列表回查并确认需求"):
+                demands_payload = _assert_success(
+                    mobile_delivery_client.get("%s/%s/demands" % (PROJECTS_URL, project_id)),
+                    "获取移动端项目需求列表",
+                )
+            demands = (demands_payload["data"] or {}).get("items") or []
+            assert any(item.get("id") == demand_id for item in demands), demands_payload
+            confirm_payload = _assert_success(
+                mobile_delivery_client.post(
+                    "%s/%s/demands/%s/confirm" % (PROJECTS_URL, project_id, demand_id),
+                    json={
+                        "decision": "confirmed",
+                        "priority": "high",
+                        "external_demand_no": "AT-DEMAND-%s" % uuid4().hex[:8],
+                        "confirm_opinion": "AT-移动端需求确认通过",
+                    },
+                ),
+                "移动端确认项目需求",
+            )
+            confirmed = confirm_payload["data"]
+            assert confirmed.get("status") == "confirmed", confirmed
+            assert confirmed.get("decision") == "confirmed", confirmed
+            assert confirmed.get("priority") == "high", confirmed
+            assert confirmed.get("confirm_opinion") == "AT-移动端需求确认通过", confirmed
+
+            with allure.step("删除已确认的临时需求并验证项目中不再存在"):
+                delete_payload = _assert_success(
+                    mobile_delivery_client.delete("%s/%s/demands/%s" % (PROJECTS_URL, project_id, demand_id)),
+                    "移动端删除项目需求",
+                )
+            assert (delete_payload.get("data") or {}).get("id") == demand_id, delete_payload
+            after_delete_payload = _assert_success(
+                mobile_delivery_client.get("%s/%s/demands" % (PROJECTS_URL, project_id)),
+                "获取删除需求后的项目需求列表",
+            )
+            assert not any(
+                item.get("id") == demand_id
+                for item in ((after_delete_payload["data"] or {}).get("items") or [])
+            ), after_delete_payload
 
             _close_and_delete_project(mobile_delivery_client, project_id)
             project_id = None
@@ -699,72 +1258,6 @@ class Test移动端项目交付处理链路:
             with allure.step("整改提交后移动端整改待办应关闭"):
                 todos = _list_todos(mobile_delivery_client, todo_type="rectification")
             assert not any(todo.get("source_id") == rectification_id for todo in todos["items"]), todos
-
-            _close_and_delete_project(mobile_delivery_client, project_id)
-            project_id = None
-        finally:
-            _cleanup_project_quietly(mobile_delivery_client, project_id)
-
-    @allure.feature("需求登记")
-    def test_移动端需求_选择来源节点登记并生成确认待办(self, mobile_delivery_client):
-        _require_write_tests()
-        project_id = None
-        try:
-            project = _create_temporary_project(mobile_delivery_client, "需求")
-            project_id = project["id"]
-            node = next(item for item in _get_nodes(mobile_delivery_client, project_id) if item["id"] == project["current_node_id"])
-            collaborator_id = _get_current_user_demand_collaborator(mobile_delivery_client)
-            title = "AT-移动端现场需求-%s" % uuid4().hex[:8]
-
-            with allure.step("移动端需求标题和描述不满足最小长度应被拒绝"):
-                invalid_demand_response = mobile_delivery_client.post(
-                    "%s/%s/demands" % (PROJECTS_URL, project_id),
-                    json={
-                        "source_node_id": node["id"],
-                        "collaborator_id": collaborator_id,
-                        "title": "A",
-                        "description": "短",
-                        **_mobile_request_meta(),
-                    },
-                )
-            _assert_error_code(invalid_demand_response, "移动端登记非法需求", INVALID_PARAMS_CODE)
-
-            with allure.step("从移动端需求登记页提交标题、描述、现场和影响范围"):
-                create_payload = _assert_success(
-                    mobile_delivery_client.post(
-                        "%s/%s/demands" % (PROJECTS_URL, project_id),
-                        json={
-                            "source_node_id": node["id"],
-                            "collaborator_id": collaborator_id,
-                            "title": title,
-                            "description": "移动端现场登记的需求描述不少于五个字符",
-                            "source_scene": "现场沟通",
-                            "proposer_name": "移动端自动化提交人",
-                            "impact_scope": "测试项目范围",
-                            **_mobile_request_meta(),
-                        },
-                    ),
-                    "移动端登记需求",
-                )
-            demand = create_payload["data"]
-            demand_id = demand.get("id")
-            assert isinstance(demand_id, int) and demand_id > 0, create_payload
-            assert demand.get("source_node_id") == node["id"], demand
-            assert demand.get("title") == title, demand
-            assert demand.get("collaborator_id") == collaborator_id, demand
-            assert demand.get("status") == "pending_confirm", demand
-
-            with allure.step("加载移动端项目需求明细"):
-                list_payload = _assert_success(
-                    mobile_delivery_client.get("%s/%s/demands" % (PROJECTS_URL, project_id)),
-                    "获取移动端项目需求列表",
-                )
-            demands = (list_payload["data"] or {}).get("items") or []
-            assert any(item.get("id") == demand_id for item in demands), list_payload
-
-            with allure.step("需求登记后待办首页显示需求确认任务"):
-                todo = _find_project_todo(mobile_delivery_client, project_id, "demand")
-            assert todo.get("source_id") == demand_id, todo
 
             _close_and_delete_project(mobile_delivery_client, project_id)
             project_id = None
