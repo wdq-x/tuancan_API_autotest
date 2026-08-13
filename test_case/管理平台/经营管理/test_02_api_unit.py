@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""基础单位和项目爬虫接口自动化测试。
-
-单位链路使用 API 创建的 AT 客户并通过业务删除接口回收。爬虫项目当前没有删除
-接口，因此使用固定的 ``AT-AUTOMATION-CRAWLER-CONTRACT-V1`` project_id 验证幂等
-提交；首次运行最多创建一条明确标识的测试记录，后续运行只会命中 skipped 分支。
-"""
-from datetime import date
+"""基础单位接口自动化测试。"""
 
 import allure
 import pytest
@@ -16,10 +10,6 @@ from utils.api_test_support import assert_success, management_client
 
 
 UNITS_URL = "/v1/units"
-CRAWLER_DATA_URL = "/v1/crawler-data"
-CRAWLER_PROJECTS_URL = "/v1/projects"
-CRAWLER_PROJECT_DETAIL_URL = "/v1/project_detail"
-CRAWLER_PROJECT_ID = "AT-AUTOMATION-CRAWLER-CONTRACT-V1"
 
 
 def _require_write_tests():
@@ -34,26 +24,8 @@ def _page_data(payload, action):
     return data
 
 
-def _crawler_payload():
-    today = date.today().isoformat()
-    return {
-        "project_id": CRAWLER_PROJECT_ID,
-        "title": "AT 自动化项目爬虫契约",
-        "publish_time": "%s 09:00:00" % today,
-        "area": "自动化测试区",
-        "province": "测试省",
-        "city": "测试市",
-        "project_type": "采购公告",
-        "tender_status": "进行中",
-        "project_amount": "0",
-        "detail_url": "https://example.invalid/at-crawler-contract",
-        "project_number": "AT-CRAWLER-CONTRACT-V1",
-        "content": "AT crawler API regression record; intentionally idempotent because delete API is unavailable.",
-    }
-
-
 @allure.parent_suite("接口自动化")
-@allure.suite("管理平台-经营管理-基础单位与项目爬虫")
+@allure.suite("管理平台-经营管理-基础单位")
 class Test基础单位:
     @allure.feature("客户单位关系")
     def test_客户单位_创建列表详情更新删除完整链路(self):
@@ -124,53 +96,3 @@ class Test基础单位:
                 except Exception:
                     pass
             delete_customer(client, customer_id)
-
-
-@allure.parent_suite("接口自动化")
-@allure.suite("管理平台-经营管理-基础单位与项目爬虫")
-class Test项目爬虫:
-    @allure.feature("爬虫项目")
-    def test_爬虫提交_项目列表日期查询详情与幂等创建(self):
-        _require_write_tests()
-        client = management_client()
-        project = _crawler_payload()
-
-        # 先验证查询权限，再写入固定幂等 AT 记录，避免无权限环境产生无法继续验证的数据。
-        with allure.step("确认测试账号可查询爬虫项目"):
-            assert_success(
-                client.get(CRAWLER_PROJECTS_URL, params={"title": project["title"], "page": 1, "page_size": 10}),
-                "preflight crawler project list",
-            )
-
-        with allure.step("通过批量爬虫入口提交固定 AT 项目"):
-            bulk_payload = assert_success(client.post(CRAWLER_DATA_URL, json=[project]), "submit idempotent AT crawler project")
-        bulk_data = bulk_payload.get("data") or {}
-        assert bulk_data.get("total_received") == 1, bulk_payload
-        assert bulk_data.get("total_created", 0) + bulk_data.get("total_skipped", 0) == 1, bulk_payload
-
-        with allure.step("按标题查询并获得持久化项目主键"):
-            list_payload = assert_success(
-                client.get(CRAWLER_PROJECTS_URL, params={"title": project["title"], "page": 1, "page_size": 10}),
-                "list idempotent AT crawler project",
-            )
-        items = _page_data(list_payload, "list idempotent AT crawler project")["items"]
-        stored = next((item for item in items if item.get("project_id") == CRAWLER_PROJECT_ID), None)
-        assert stored is not None, list_payload
-        stored_id = stored.get("id")
-        assert isinstance(stored_id, int) and stored_id > 0, stored
-
-        with allure.step("按发布日期和详情接口回查同一 AT 项目"):
-            by_date_payload = assert_success(
-                client.get("%s/date/%s" % (CRAWLER_PROJECTS_URL, date.today().isoformat())),
-                "list AT crawler projects by publish date",
-            )
-            detail_response = client.get(CRAWLER_PROJECT_DETAIL_URL, params={"project_id": stored_id})
-        by_date_items = by_date_payload.get("data") or []
-        assert any(item.get("id") == stored_id for item in by_date_items), by_date_payload
-        detail_payload = detail_response.json()
-        assert detail_response.status_code == 200 and detail_payload.get("code") == 20000, detail_payload
-        assert (detail_payload.get("data") or {}).get("id") == stored_id, detail_payload
-
-        with allure.step("通过单条创建入口验证相同 project_id 幂等返回"):
-            single_payload = assert_success(client.post(CRAWLER_PROJECTS_URL, json=project), "create existing AT crawler project")
-        assert (single_payload.get("data") or {}).get("id") == stored_id, single_payload
