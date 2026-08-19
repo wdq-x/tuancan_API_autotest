@@ -43,6 +43,7 @@ def _receipt_confirmation_payload(**overrides):
 class Test经销商退款金额确认:
     @allure.feature("页面与后台查询")
     @allure.title("退款确认页面与后台查询模型")
+    @allure.step("执行：退款确认页面与后台查询模型")
     def test_refund_pages_and_admin_read_models_are_available(self):
         client = HttpClient()
         for suffix, action in (("/h5", "load refund H5"), ("/admin", "load refund administration page")):
@@ -62,6 +63,7 @@ class Test经销商退款金额确认:
 
     @allure.feature("查询与确认校验")
     @allure.title("未知退款查询与无效确认被拒绝")
+    @allure.step("执行：未知退款查询与无效确认被拒绝")
     def test_unknown_refund_lookup_and_invalid_confirmation_are_rejected(self):
         client = HttpClient()
         assert_client_error(
@@ -79,6 +81,7 @@ class Test经销商退款金额确认:
 
     @allure.feature("查询与确认校验")
     @allure.title("退款查询与确认格式校验返回精确错误码")
+    @allure.step("执行：退款查询与确认格式校验返回精确错误码")
     def test_refund_lookup_and_confirmation_reject_invalid_format_with_exact_codes(self):
         client = HttpClient()
         assert_validation_error(
@@ -114,6 +117,7 @@ class Test经销商退款金额确认:
 class Test经销商退款回执确认:
     @allure.feature("页面与后台查询")
     @allure.title("退款回执页面与后台查询模型")
+    @allure.step("执行：退款回执页面与后台查询模型")
     def test_receipt_pages_and_admin_read_models_are_available(self):
         client = HttpClient()
         for suffix, action in (("/h5", "load receipt H5"), ("/upload", "load receipt upload page"), ("/admin", "load receipt administration page")):
@@ -134,6 +138,7 @@ class Test经销商退款回执确认:
 
     @allure.feature("查询与上传校验")
     @allure.title("未知回执查询空确认与空上传被拒绝")
+    @allure.step("执行：未知回执查询空确认与空上传被拒绝")
     def test_unknown_receipt_lookup_empty_confirmation_and_empty_upload_are_rejected(self):
         client = HttpClient()
         assert_client_error(
@@ -156,6 +161,7 @@ class Test经销商退款回执确认:
 
     @allure.feature("查询上传与确认校验")
     @allure.title("回执校验与未知文件异常契约")
+    @allure.step("执行：回执校验与未知文件异常契约")
     def test_receipt_validation_and_unknown_file_contracts_are_exact(self):
         client = HttpClient()
         assert_validation_error(
@@ -194,6 +200,7 @@ class Test经销商退款回执确认:
 
     @allure.feature("回执上传校验")
     @allure.title("缺少文件名上传回执被拒绝且不写入数据")
+    @allure.step("执行：缺少文件名上传回执被拒绝且不写入数据")
     def test_receipt_upload_rejects_missing_filename_without_writing_data(self):
         client = HttpClient()
         response = requests.post(

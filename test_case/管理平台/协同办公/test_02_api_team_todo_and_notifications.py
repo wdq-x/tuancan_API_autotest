@@ -24,11 +24,13 @@ def collaboration_client():
 class Test团队待办:
     @allure.feature("访问控制")
     @allure.title("未登录访问团队待办列表被拒绝")
+    @allure.step("请求团队待办列表并验证未登录访问被拒绝")
     def test_anonymous_team_todo_list_is_rejected(self):
         assert_auth_required(HttpClient(headers=default_headers.copy()).get(TODO_URL), "anonymous team todo list")
 
     @allure.feature("列表与人员选择")
     @allure.title("团队待办列表与处理人选择查询")
+    @allure.step("执行：团队待办列表与处理人选择查询")
     def test_team_todo_list_and_assignee_selector_are_available(self, collaboration_client):
         todos = assert_success(collaboration_client.get(TODO_URL, params={"page": 1, "page_size": 10}), "list team todos")
         assert isinstance((todos.get("data") or {}).get("items"), list), todos
@@ -49,6 +51,7 @@ class Test团队待办:
 
     @allure.feature("待办生命周期")
     @allure.title("团队待办创建更新删除与数据清理")
+    @allure.step("执行：团队待办创建更新删除与数据清理")
     def test_team_todo_create_update_and_delete_are_cleaned_up(self, collaboration_client):
         if not ENABLE_WRITE_TESTS:
             pytest.skip("write tests are disabled through ENABLE_WRITE_TESTS")
@@ -91,6 +94,7 @@ class Test团队待办:
 class Test待办通知:
     @allure.feature("访问控制")
     @allure.title("未登录访问待办通知配置被拒绝")
+    @allure.step("执行：未登录访问待办通知配置被拒绝")
     def test_anonymous_notification_configuration_is_rejected(self):
         assert_auth_required(
             HttpClient(headers=default_headers.copy()).get(NOTIFICATION_URL + "/configurations"),
@@ -99,6 +103,7 @@ class Test待办通知:
 
     @allure.feature("配置与授权入口")
     @allure.title("通知配置查询保存校验与微信授权入口")
+    @allure.step("执行：通知配置查询保存校验与微信授权入口")
     def test_notification_read_models_and_invalid_save_contract(self, collaboration_client):
         payload = assert_success(collaboration_client.get(NOTIFICATION_URL + "/configurations"), "get notification configurations")
         assert isinstance((payload.get("data") or {}).get("configurations"), list), payload

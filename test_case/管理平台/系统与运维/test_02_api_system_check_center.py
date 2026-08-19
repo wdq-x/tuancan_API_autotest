@@ -19,6 +19,7 @@ BASE_URL = "/v1/system-check-center"
 class Test系统巡检中心:
     @allure.feature("运营看板")
     @allure.title("系统巡检中心看板查询模型")
+    @allure.step("执行：系统巡检中心看板查询模型")
     def test_dashboard_read_models_return_success_envelopes(self):
         client = HttpClient()
         requests = (

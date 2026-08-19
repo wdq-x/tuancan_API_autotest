@@ -777,6 +777,7 @@ class Test线索管理业务链路:
             _cleanup_temporary_channel(lead_client, channel_id)
 
     @allure.feature("兼容接口异常")
+    @allure.step("执行：标准线索列表当前被详情动态路由抢占")
     def test_标准线索列表_当前被详情动态路由抢占(self, lead_client):
         """精确记录 /leads/list 当前被 /leads/{lead_id} 抢占的路由顺序问题。"""
         response = lead_client.get("%s/list" % LEADS_URL, params={"page": 1, "page_size": 10})

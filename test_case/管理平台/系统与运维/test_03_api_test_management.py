@@ -18,6 +18,7 @@ def test_management_client():
 class Test测试管理:
     @allure.feature("访问控制")
     @allure.title("未登录访问定时测试任务被拒绝")
+    @allure.step("执行：未登录访问定时测试任务被拒绝")
     def test_anonymous_scheduled_task_access_is_rejected(self):
         assert_auth_required(
             HttpClient(headers=default_headers.copy()).get("/v1/test-scheduled-tasks"),
@@ -26,6 +27,7 @@ class Test测试管理:
 
     @allure.feature("环境与执行记录")
     @allure.title("测试环境定时任务与执行记录查询")
+    @allure.step("执行：测试环境定时任务与执行记录查询")
     def test_test_management_read_models_are_available(self, test_management_client):
         environment_payload = assert_success(
             test_management_client.get("/v1/test-env-configs", params={"page": 1, "page_size": 10}),
@@ -54,6 +56,7 @@ class Test测试管理:
 
     @allure.feature("参数校验")
     @allure.title("测试环境与定时任务创建参数校验")
+    @allure.step("执行：测试环境与定时任务创建参数校验")
     def test_test_environment_and_scheduled_task_require_valid_payloads(self, test_management_client):
         assert_validation_error(
             test_management_client.post("/v1/test-env-configs", json={}),

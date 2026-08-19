@@ -19,6 +19,7 @@ BASE_URL = "/v1/channel-auth"
 class Test渠道账号认证:
     @allure.feature("登录校验")
     @allure.title("渠道账号登录缺少凭据被拒绝")
+    @allure.step("执行：渠道账号登录缺少凭据被拒绝")
     def test_channel_login_rejects_missing_credentials(self):
         assert_validation_error(
             HttpClient().post(BASE_URL + "/login", json={}),
@@ -28,6 +29,7 @@ class Test渠道账号认证:
 
     @allure.feature("令牌边界")
     @allure.title("渠道账号接口未登录访问被拒绝")
+    @allure.step("执行：渠道账号接口未登录访问被拒绝")
     def test_channel_account_endpoints_reject_anonymous_access(self):
         client = HttpClient()
         for suffix, action in (

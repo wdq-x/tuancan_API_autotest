@@ -34,6 +34,7 @@ def device_client():
 class Test设备心跳校验:
     @allure.feature("心跳校验")
     @allure.title("设备心跳批量空请求被拒绝")
+    @allure.step("执行：设备心跳批量空请求被拒绝")
     def test_device_heartbeat_batch_rejects_an_empty_payload(self):
         response = HttpClient(headers=default_headers.copy()).post(HEARTBEAT_URL + "/batch", json={})
         assert_client_error(
@@ -46,6 +47,7 @@ class Test设备心跳校验:
 
     @allure.feature("心跳校验")
     @allure.title("设备心跳批量缺少或非法项目被拒绝")
+    @allure.step("执行：设备心跳批量缺少或非法项目被拒绝")
     def test_device_heartbeat_batch_rejects_missing_or_invalid_items(self):
         client = HttpClient(headers=default_headers.copy())
         for payload, action, message in (
@@ -67,11 +69,13 @@ class Test设备心跳校验:
 class Test设备概览与版本管理:
     @allure.feature("访问控制")
     @allure.title("未登录访问设备概览被拒绝")
+    @allure.step("执行：未登录访问设备概览被拒绝")
     def test_anonymous_device_overview_is_rejected(self):
         assert_auth_required(HttpClient(headers=default_headers.copy()).get(OVERVIEW_URL), "anonymous device overview")
 
     @allure.feature("设备概览")
     @allure.title("设备列表阈值与版本概览查询")
+    @allure.step("执行：设备列表阈值与版本概览查询")
     def test_device_lists_thresholds_and_version_views_have_stable_envelopes(self, device_client):
         overview = assert_success(
             device_client.get(OVERVIEW_URL, params={"page": 1, "page_size": 10}),
@@ -93,6 +97,7 @@ class Test设备概览与版本管理:
 
     @allure.feature("版本管理")
     @allure.title("设备版本目录与更新接口查询")
+    @allure.step("执行：设备版本目录与更新接口查询")
     def test_device_version_catalogue_and_update_endpoints_are_readable(self, device_client):
         version_list = assert_success(
             device_client.get(VERSIONS_URL, params={"page": 1, "page_size": 10}),
@@ -112,6 +117,7 @@ class Test设备概览与版本管理:
 
     @allure.feature("版本管理")
     @allure.title("设备版本创建参数校验")
+    @allure.step("执行：设备版本创建参数校验")
     def test_device_version_creation_requires_a_valid_payload(self, device_client):
         assert_validation_error(
             device_client.post(VERSIONS_URL, json={}),
@@ -121,6 +127,7 @@ class Test设备概览与版本管理:
 
     @allure.feature("版本管理")
     @allure.title("未知设备版本和应用包异常契约")
+    @allure.step("执行：未知设备版本和应用包异常契约")
     def test_device_version_and_package_not_found_contracts_are_exact(self, device_client):
         unknown_id = 2147483647
         for request, action in (
@@ -152,6 +159,7 @@ class Test设备概览与版本管理:
 
     @allure.feature("设备概览")
     @allure.title("未知设备与非法分页请求被拒绝")
+    @allure.step("执行：未知设备与非法分页请求被拒绝")
     def test_device_overview_rejects_unknown_device_and_invalid_page(self, device_client):
         assert_validation_error(
             device_client.get(OVERVIEW_URL, params={"page": 0}),

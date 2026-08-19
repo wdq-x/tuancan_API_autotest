@@ -28,11 +28,13 @@ def _multipart_headers(client):
 class Test文档管理查询与校验:
     @allure.feature("访问控制")
     @allure.title("未登录访问文档目录树被拒绝")
+    @allure.step("执行：未登录访问文档目录树被拒绝")
     def test_anonymous_folder_tree_is_rejected(self):
         assert_auth_required(HttpClient(headers=default_headers.copy()).get(BASE_URL + "/folders/tree"), "anonymous document folder tree")
 
     @allure.feature("目录与文档查询")
     @allure.title("文档查询模型与未知资源异常契约")
+    @allure.step("执行：文档查询模型与未知资源异常契约")
     def test_document_read_models_and_unknown_resource_contracts(self, document_client):
         tree = assert_success(document_client.get(BASE_URL + "/folders/tree"), "get document folder tree")
         assert isinstance((tree.get("data") or {}).get("items"), list), tree
@@ -59,6 +61,7 @@ class Test文档管理查询与校验:
 
     @allure.feature("目录与文档校验")
     @allure.title("文件夹参数与未知文件夹异常契约")
+    @allure.step("执行：文件夹参数与未知文件夹异常契约")
     def test_folder_validation_and_unknown_folder_contracts_are_exact(self, document_client):
         unknown_id = 2147483647
         assert_client_error(
@@ -89,6 +92,7 @@ class Test文档管理查询与校验:
 
     @allure.feature("文档与版本异常")
     @allure.title("未知文档与版本异常契约")
+    @allure.step("执行：未知文档与版本异常契约")
     def test_document_and_version_not_found_contracts_are_exact(self, document_client):
         unknown_id = 2147483647
         document_paths = (
@@ -135,6 +139,7 @@ class Test文档管理查询与校验:
 
     @allure.feature("分页与上传校验")
     @allure.title("文档分页与上传参数校验")
+    @allure.step("执行：文档分页与上传参数校验")
     def test_document_pagination_and_upload_requirements_are_exact(self, document_client):
         assert_validation_error(
             document_client.get(BASE_URL + "/documents", params={"page": 0}),
@@ -184,6 +189,7 @@ class Test文档管理查询与校验:
 class Test文档管理业务链路:
     @allure.feature("目录与文件生命周期")
     @allure.title("文件夹上传编辑版本回收还原与彻底删除")
+    @allure.step("执行：文件夹上传编辑版本回收还原与彻底删除")
     def test_folder_upload_edit_version_recycle_restore_and_permanent_delete(self, document_client):
         if not ENABLE_WRITE_TESTS:
             pytest.skip("write tests are disabled through ENABLE_WRITE_TESTS")

@@ -563,6 +563,7 @@ class Test客户管理业务链路:
                 _cleanup_temporary_customer(customer_client, customer_id)
 
     @allure.feature("已删除列表异常")
+    @allure.step("执行：已删除客户列表当前被详情动态路由抢占")
     def test_已删除客户列表_当前被详情动态路由抢占(self, customer_client):
         """精确记录 /customers/deleted 被 /customers/{customer_id} 抢占的问题。"""
         response = customer_client.get("%s/deleted" % CUSTOMERS_URL, params={"page": 1, "page_size": 10})

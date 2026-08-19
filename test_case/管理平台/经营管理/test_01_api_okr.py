@@ -36,11 +36,13 @@ def okr_client():
 class TestOKR管理:
     @allure.feature("访问控制")
     @allure.title("未登录访问我的 OKR 被拒绝")
+    @allure.step("执行：未登录访问我的 OKR 被拒绝")
     def test_anonymous_my_okr_is_rejected(self):
         assert_auth_required(HttpClient(headers=default_headers.copy()).get(BASE_URL + "/my", params={"cycle": CYCLE}), "anonymous my OKR")
 
     @allure.feature("树形结构选择与概览")
     @allure.title("OKR 树成员绩效部门公司与概览查询")
+    @allure.step("执行：OKR 树成员绩效部门公司与概览查询")
     def test_okr_read_models_return_success_envelopes(self, okr_client):
         requests = (
             ("/my", {"cycle": CYCLE}, "get my OKR"),
@@ -63,6 +65,7 @@ class TestOKR管理:
 
     @allure.feature("个人目标生命周期")
     @allure.title("个人 OKR 目标创建编辑删除与数据清理")
+    @allure.step("执行：个人 OKR 目标创建编辑删除与数据清理")
     def test_personal_objective_create_update_and_delete_are_cleaned_up(self, okr_client):
         if not ENABLE_WRITE_TESTS:
             pytest.skip("write tests are disabled through ENABLE_WRITE_TESTS")

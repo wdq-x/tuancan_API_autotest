@@ -21,11 +21,13 @@ def mobile_home_client():
 class Test移动端首页:
     @allure.feature("访问控制")
     @allure.title("未登录访问经营概览被拒绝")
+    @allure.step("执行：未登录访问经营概览被拒绝")
     def test_anonymous_business_summary_is_rejected(self):
         assert_auth_required(HttpClient(headers=default_headers.copy()).get(URL), "anonymous mobile home business summary")
 
     @allure.feature("经营概览")
     @allure.title("经营概览查询与日期范围校验")
+    @allure.step("执行：经营概览查询与日期范围校验")
     def test_business_summary_returns_data_and_validates_day_range(self, mobile_home_client):
         payload = assert_success(mobile_home_client.get(URL, params={"days": 15}), "get mobile home business summary")
         assert isinstance(payload.get("data"), dict), payload
