@@ -17,6 +17,7 @@ from utils.http_client import HttpClient
 
 
 LOGIN_URL = "/v1/login"
+USERS_URL = "/v1/users"
 CUSTOMERS_URL = "/v1/customers"
 SALES_PRODUCTS_URL = "/v1/sales/products"
 SALES_CUSTOMER_OPTIONS_URL = "/v1/sales/customers/options"
@@ -124,6 +125,66 @@ def _assert_workspace_shape(workspace, action, expected_quote_id=None):
     assert isinstance(workspace["version"], int) and workspace["version"] >= 1, "%s 版本号非法：%s" % (action, workspace)
     if expected_quote_id is not None:
         assert workspace["id"] == expected_quote_id, "%s 报价单 id 不正确：%s" % (action, workspace)
+
+
+def _review_recipient_body(client, quote_id):
+    """构造提交审核所需的审核对象参数，兼容候选接口暂未返回分组的环境。"""
+    recipients_payload = _assert_success(
+        client.get("%s/%s/review-recipients" % (SALES_QUOTATIONS_URL, quote_id)),
+        "获取报价单审核人选项",
+    )
+    recipient_data = recipients_payload.get("data") or {}
+    for group in recipient_data.get("groups") or []:
+        for item in group.get("items") or []:
+            recipient_type = item.get("account_type") or item.get("review_recipient_type")
+            recipient_id = item.get("account_id")
+            if recipient_id is None:
+                recipient_id = item.get("review_recipient_id")
+            if recipient_type and isinstance(recipient_id, int) and recipient_id > 0:
+                return {
+                    "review_recipient_type": recipient_type,
+                    "review_recipient_id": recipient_id,
+                }
+
+    # 当前测试环境的候选接口可能返回 selection_required=false 且 groups=[]，
+    # 但 submit-review 的请求模型仍要求显式传入审核对象。
+    users_payload = _assert_success(
+        client.get(USERS_URL, params={"page": 1, "page_size": 100, "include_roles": "true"}),
+        "获取报价单审核账号",
+    )
+    users_data = users_payload.get("data") or {}
+    users = users_data.get("items") or []
+    reviewer = next(
+        (
+            user
+            for user in users
+            if isinstance(user, dict)
+            and any(
+                isinstance(role, dict) and role.get("code") == "shicahng"
+                for role in user.get("roles") or []
+            )
+            and isinstance(user.get("id"), int)
+            and user["id"] > 0
+        ),
+        None,
+    )
+    if reviewer is None:
+        reviewer = next(
+            (
+                user
+                for user in users
+                if isinstance(user, dict)
+                and isinstance(user.get("id"), int)
+                and user["id"] > 0
+            ),
+            None,
+        )
+    if reviewer is None:
+        pytest.skip("当前环境没有可用审核账号，无法提交报价单审核")
+    return {
+        "review_recipient_type": "internal_user",
+        "review_recipient_id": reviewer["id"],
+    }
 
 
 def _login_client(username, password, action):
@@ -506,10 +567,14 @@ class Test销售报价单业务链路:
             quote = _create_temporary_quote(sales_quotation_client, customer_id)
             quote_id = quote["id"]
             workspace = _save_workspace_with_product(sales_quotation_client, quote, product, title_suffix="审核链路")
+            review_body = _review_recipient_body(sales_quotation_client, quote_id)
 
             with allure.step("提交草稿报价单审核"):
                 submitted_payload = _assert_success(
-                    sales_quotation_client.post("%s/%s/submit-review" % (SALES_QUOTATIONS_URL, quote_id), json={}),
+                    sales_quotation_client.post(
+                        "%s/%s/submit-review" % (SALES_QUOTATIONS_URL, quote_id),
+                        json=review_body,
+                    ),
                     "提交报价单审核",
                 )
             submitted = submitted_payload["data"]
@@ -530,7 +595,10 @@ class Test销售报价单业务链路:
 
             with allure.step("重新提交并确认报价单"):
                 resubmitted_payload = _assert_success(
-                    sales_quotation_client.post("%s/%s/submit-review" % (SALES_QUOTATIONS_URL, quote_id), json={}),
+                    sales_quotation_client.post(
+                        "%s/%s/submit-review" % (SALES_QUOTATIONS_URL, quote_id),
+                        json=review_body,
+                    ),
                     "重新提交报价单审核",
                 )
                 confirmed_payload = _assert_success(
